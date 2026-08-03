@@ -7,7 +7,7 @@
 //!   use them. They are implementation details of a syntax feature, not
 //!   something an author asked for, so making them install a package would be
 //!   backwards.
-//! * **The element factory** — whatever `[emit] create` names, defaulting to
+//! * **The element factory** — whatever `[factory] create` names, defaulting to
 //!   bare `create`. luaux only checks it is in scope; the author imports Vide in
 //!   whatever style their project uses.
 //!
@@ -84,7 +84,7 @@ pub fn inject(
                 offset: 0,
                 length: 0,
                 help: Some(format!(
-                    "import it, or point [emit] create at something else \
+                    "import it, or point [factory] create at something else \
                      (currently `{}`)",
                     config.create
                 )),

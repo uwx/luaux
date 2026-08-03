@@ -212,6 +212,20 @@ impl Visitor for Bindings {
         self.insert(node.name());
     }
 
+    // `const` binds exactly as `local` does, and missing it is not a quiet
+    // degradation: the factory check reports `vide` is not in scope for a file
+    // that imported it, and every component declared that way stops resolving,
+    // so `<Card/>` is told it is not a Roblox class.
+    fn visit_const_assignment(&mut self, node: &ast::luau::ConstAssignment) {
+        for name in node.names() {
+            self.insert(name);
+        }
+    }
+
+    fn visit_const_function(&mut self, node: &ast::luau::ConstFunction) {
+        self.insert(node.name());
+    }
+
     fn visit_function_declaration(&mut self, node: &ast::FunctionDeclaration) {
         // `function Receipt()` binds a global; `function a.b.c()` binds nothing
         // new, but recording the head is harmless.
@@ -281,6 +295,8 @@ mod tests {
             "function Receipt() end",
             "Receipt = function() end",
             "local Receipt",
+            "const Receipt = require('./Receipt')",
+            "const function Receipt() end",
         ] {
             assert_eq!(
                 resolver(source).resolve(&simple("Receipt"), 0),

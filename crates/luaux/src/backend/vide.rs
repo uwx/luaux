@@ -15,7 +15,7 @@ use crate::markup::*;
 use crate::resolve::Resolution;
 use crate::roblox;
 
-// The element factory is configurable (`[emit] create`) and reaches the backend
+// The element factory is configurable (`[factory] create`) and reaches the backend
 // through EmitContext, so there is no constant for it here.
 
 /// Merge helper for spread attributes. Inlined into the output rather than

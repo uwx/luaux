@@ -1026,6 +1026,21 @@ mod tests {
         assert!(ok.is_ok(), "{ok:?}");
     }
 
+    /// `const` is Luau, and the import it declares binds like any other.
+    ///
+    /// Collecting bindings missed it, which failed in the least useful way
+    /// available: a file that imported Vide on its first line was told Vide was
+    /// not in scope, with a help line suggesting it import Vide.
+    #[test]
+    fn a_const_import_satisfies_the_factory() {
+        let ok = compile_configured(
+            "const vide = require('./vide')\nlocal e = <Frame/>",
+            &Vide,
+            Config::with_create("vide.create"),
+        );
+        assert!(ok.is_ok(), "{ok:?}");
+    }
+
     #[test]
     fn warns_about_conditional_children_that_never_update() {
         // §11.1 — the LuauX is built once, so the condition looks live but is not.

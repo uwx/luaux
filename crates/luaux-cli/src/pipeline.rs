@@ -57,7 +57,7 @@ impl Report {
 /// luaux used to detect where Vide lived and emit a `require` for it. That is
 /// gone: a require is location-dependent, so no single configured string is
 /// correct for every file, and an author's own import always is. All the
-/// compiler needs now is that `[emit] create` names something in scope.
+/// compiler needs now is that `[factory] create` names something in scope.
 pub fn configure(source_root: &Path) -> Result<Config, String> {
     find_config(source_root)
 }
