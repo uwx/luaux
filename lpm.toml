@@ -1,5 +1,6 @@
 [tools]
 rojo = "rojo-rbx/rojo@7.7.0"
+luaux = "luau-xml/luaux@0.1.2"
 
 [indices]
 pesde = "https://github.com/pesde-pkg/index"

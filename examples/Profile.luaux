@@ -6,7 +6,7 @@
 	`__call`, which is how a class becomes usable as a tag.
 ]]
 
-local Vide = require('@pkg/shared/vide')
+const Vide = require('@pkg/roblox/vide')
 local create, source = Vide.create, Vide.source
 
 type Source<T> = Vide.Source<T>

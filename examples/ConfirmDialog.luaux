@@ -6,7 +6,7 @@
 	pair of buttons — while its caller keeps ownership of layout.
 ]]
 
-local Vide = require('@pkg/shared/vide')
+local Vide = require('@pkg/roblox/vide')
 local create, source, show = Vide.create, Vide.source, Vide.show
 
 export type ConfirmDialogProps = {

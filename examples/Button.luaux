@@ -6,7 +6,7 @@
 	component and an intrinsic are interchangeable at the call site.
 ]]
 
-local Vide = require('@pkg/shared/vide')
+local Vide = require('@pkg/roblox/vide')
 local create, source = Vide.create, Vide.source
 
 type Source<T> = Vide.Source<T>

@@ -10,7 +10,7 @@
 	table merge you would have written by hand.
 ]]
 
-local Vide = require('@pkg/shared/vide')
+local Vide = require('@pkg/roblox/vide')
 local create = Vide.create
 
 local Styles = {

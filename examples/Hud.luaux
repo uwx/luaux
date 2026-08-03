@@ -7,7 +7,7 @@
 	— a value it actually read changes.
 ]]
 
-local Vide = require('@pkg/shared/vide')
+local Vide = require('@pkg/roblox/vide')
 local create, source, derive = Vide.create, Vide.source, Vide.derive
 
 type Read<T> = () -> T
