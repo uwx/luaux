@@ -69,11 +69,13 @@ pub fn inject(
     config: &Config,
 ) -> Result<String, CompileError> {
     if helpers.create {
-        // Only the root of a dotted expression can be a binding: for
-        // `vide.create` that is `vide`.
+        // Only the head of a name path can be a binding: for `vide.create` that
+        // is `vide`, and for the method form `scope:New` it is `scope`. Missing
+        // the colon reported `scope:New` itself as the name, so a file that
+        // bound `scope` was told to import something it cannot.
         let root = config
             .create
-            .split('.')
+            .split(['.', ':'])
             .next()
             .unwrap_or(&config.create)
             .trim();
@@ -229,6 +231,27 @@ mod tests {
             inject("local x = 1", helpers, &bound(&["create"]), &config).expect_err("should fail");
         assert!(
             error.message.contains("`vide` is not in scope"),
+            "{error:?}"
+        );
+    }
+
+    /// The method form names its object, not itself. Splitting on `.` alone
+    /// took `scope:New` for one name, so a file that had imported Fusion — or
+    /// anything else reached through a method — was told to import `scope:New`.
+    #[test]
+    fn checks_the_object_a_method_factory_is_called_on() {
+        let helpers = Helpers {
+            create: true,
+            ..Default::default()
+        };
+        let config = Config::with_create("scope:New");
+
+        assert!(inject("local x = 1", helpers, &bound(&["scope"]), &config).is_ok());
+
+        let error =
+            inject("local x = 1", helpers, &bound(&["New"]), &config).expect_err("should fail");
+        assert!(
+            error.message.contains("`scope` is not in scope"),
             "{error:?}"
         );
     }

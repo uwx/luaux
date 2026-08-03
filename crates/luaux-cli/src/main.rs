@@ -18,7 +18,41 @@ use pipeline::Options;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+/// Stack for the thread every command runs on.
+///
+/// `compile_verified` re-parses its own output with full_moon, whose recursive
+/// descent has large stack frames in debug builds. The inlined merge helper is
+/// deep enough to exhaust the main thread's default stack — 1 MB on Windows —
+/// so `luaux build` on any file containing a spread aborted with a stack
+/// overflow before compiling anything. The test suites already run on a larger
+/// stack for exactly this reason (see `compile::tests`); the CLI needs the same.
+const STACK: usize = 16 * 1024 * 1024;
+
+/// Rust's own exit code for a panic, which running off the main thread would
+/// otherwise turn into an ordinary `1` — the code a failed *compile* returns.
+/// A wrapper script that tells "luaux crashed" from "the source has errors"
+/// depends on those staying distinct.
+const PANICKED: u8 = 101;
+
 fn main() -> ExitCode {
+    // Named, so a panic reports `thread 'luaux'` rather than `<unnamed>` and a
+    // pasted bug report still says where it came from.
+    let spawned = std::thread::Builder::new()
+        .name("luaux".to_string())
+        .stack_size(STACK)
+        .spawn(run);
+
+    match spawned {
+        // The panic has already printed through the default hook, so the exit
+        // code is all that is left to carry.
+        Ok(handle) => handle.join().unwrap_or(ExitCode::from(PANICKED)),
+        // If a thread cannot be spawned at all, running on the main stack is
+        // better than not running: only a deep parse needs the extra room.
+        Err(_) => run(),
+    }
+}
+
+fn run() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let rest: &[String] = args.get(1..).unwrap_or(&[]);
 

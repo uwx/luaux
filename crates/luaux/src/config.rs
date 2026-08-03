@@ -240,6 +240,10 @@ pub struct Config {
     /// Naming, not shape: whatever this points at must still match Vide's
     /// `create(class)(propsAndChildren)` contract. A different *shape* needs a
     /// backend, not a name.
+    ///
+    /// Trimmed and checked to lower to Luau when it came from
+    /// [`Config::parse`]. [`Config::with_create`] does neither, so a caller
+    /// building a config by hand owns that.
     pub create: String,
 }
 
@@ -302,6 +306,12 @@ impl Config {
     }
 
     /// A config whose only non-default setting is the element factory.
+    ///
+    /// Takes the factory as given — no trimming, and none of the checking
+    /// [`Config::parse`] does. A value that will not lower to Luau still
+    /// reaches the backend from here and still comes back as luaux's own
+    /// "please report it" internal error, so a caller taking this from user
+    /// input wants `parse` instead.
     pub fn with_create(create: impl Into<String>) -> Self {
         Self {
             create: create.into(),
@@ -370,12 +380,16 @@ impl Config {
         config.build.clean = raw.build.clean.unwrap_or(false);
 
         if let Some(create) = raw.factory.create {
-            if create.trim().is_empty() {
+            let create = create.trim();
+
+            if create.is_empty() {
                 return Err(ConfigError {
                     message: "luaux.toml: [factory] create cannot be empty".to_string(),
                 });
             }
-            config.create = create;
+
+            validate_create(create)?;
+            config.create = create.to_string();
         }
 
         // `all` is reserved in both tables. No Roblox class or member is named
@@ -590,6 +604,60 @@ impl Config {
     }
 }
 
+/// Rejects a `[factory] create` that will not lower to Luau.
+///
+/// Checked in the shape it is *emitted* into — `create("Frame")({})` — rather
+/// than as an expression on its own, because `scope:New` is a legal factory and
+/// not a legal expression: Luau requires a `:` call's arguments to follow
+/// immediately. Checking the call shape also keeps the curried and indexed
+/// forms that already worked — `vide.create()`, `ui.factories[1]` — so this
+/// rejects nothing that used to compile.
+///
+/// Checked here because the alternative is not a wrong error but a misdirected
+/// one. A factory that does not lower to Luau reaches the backend, emits, and
+/// comes back out of [`crate::compile_verified`] as *"internal error: the vide
+/// backend emitted invalid Luau — this is a luaux bug; please report it"*,
+/// which sends someone to the issue tracker over a typo in their own config.
+///
+/// Not everything wrong is catchable here, and it does not need to be.
+/// `(vide.create)` lowers perfectly well and is still refused — by the in-scope
+/// check in [`crate::imports`], which is the other half of the pair. This asks
+/// whether the value lowers to Luau; that asks whether it names something the
+/// file can reach.
+fn validate_create(create: &str) -> Result<(), ConfigError> {
+    let reject = |reason: &str| {
+        Err(ConfigError {
+            message: format!(
+                "luaux.toml: [factory] create = \"{create}\" {reason}; it has to name a \
+                 function, as create, vide.create, or scope:New"
+            ),
+        })
+    };
+
+    // `..` is Luau's concatenation operator, so `vide..create` *parses* — as a
+    // string, which is not callable. The probe below would wave it through and
+    // the typo would survive to runtime, so it is caught by name first.
+    if create.contains("..") {
+        return reject("has a `.` with no name beside it");
+    }
+
+    // Parenthesised so the value has to be *one* expression. Bare, `vide create`
+    // parses as two statements — `local _ = vide`, then a call — because Luau
+    // needs no separator between them. The probe would pass, and the emitted
+    // `local e = vide create("Frame")({})` would split the same way and quietly
+    // build nothing.
+    let probe = format!("local _ = ({create}(\"Frame\")({{}}))");
+
+    if full_moon::parse_fallible(&probe, full_moon::LuaVersion::luau())
+        .into_result()
+        .is_err()
+    {
+        return reject("is not something luaux can call");
+    }
+
+    Ok(())
+}
+
 fn suggest_class(name: &str) -> String {
     match roblox::closest_class(name) {
         Some(class) => format!("; did you mean {class}?"),
@@ -655,6 +723,88 @@ mod tests {
     #[test]
     fn rejects_an_empty_factory() {
         assert!(parse_err("[factory]\ncreate = \"\"\n").contains("cannot be empty"));
+        assert!(parse_err("[factory]\ncreate = \"   \"\n").contains("cannot be empty"));
+    }
+
+    /// Anything that lowers to a call is accepted, not only a dotted name. The
+    /// curried and indexed forms compiled before this check existed, so they
+    /// have to keep compiling.
+    #[test]
+    fn accepts_every_factory_that_lowers_to_a_call() {
+        for create in [
+            "create",
+            "vide.create",
+            "scope:New",
+            "a.b.c",
+            "_v1.x2",
+            "vide.create()",
+            "ui.factories[1]",
+        ] {
+            let config = parse(&format!("[factory]\ncreate = \"{create}\"\n"));
+            assert_eq!(config.create, create);
+
+            // Acceptance has to mean the emitted call parses, not merely that
+            // the string survived the config.
+            let probe = format!("local _ = ({create}(\"Frame\")({{}}))");
+            assert!(
+                full_moon::parse_fallible(&probe, full_moon::LuaVersion::luau())
+                    .into_result()
+                    .is_ok(),
+                "{create}"
+            );
+        }
+    }
+
+    /// Each of these used to reach the backend, emit, and come back out of
+    /// `compile_verified` as "internal error … this is a luaux bug; please
+    /// report it" — sending someone to the issue tracker over their own typo.
+    #[test]
+    fn rejects_a_factory_that_will_not_lower_to_luau() {
+        for (create, reason) in [
+            ("vide..create", "with no name beside it"),
+            ("vide.", "not something luaux can call"),
+            (".create", "not something luaux can call"),
+            ("create(", "not something luaux can call"),
+            // Two statements, not one expression: `local _ = vide` then a call.
+            ("vide create", "not something luaux can call"),
+            ("1 + 1", "not something luaux can call"),
+            // A colon has to be the last separator: `a:b` must be followed by
+            // its arguments, so `a:b.c` has no callable spelling.
+            ("scope:New:Now", "not something luaux can call"),
+            ("scope:New.Now", "not something luaux can call"),
+            ("scope:", "not something luaux can call"),
+            // Reserved words are not field names — `t.end` is a syntax error.
+            ("end", "not something luaux can call"),
+            ("a.end", "not something luaux can call"),
+        ] {
+            let error = parse_err(&format!("[factory]\ncreate = \"{create}\"\n"));
+            assert!(error.contains("[factory] create"), "{create}: {error}");
+            // The reason, not just the fixed wrapper `reject` puts around every
+            // one — otherwise a single blanket message would satisfy the lot.
+            assert!(error.contains(reason), "{create}: {error}");
+        }
+    }
+
+    /// The half this check deliberately does not cover, recorded so the split
+    /// stays visible: `(vide.create)` lowers to perfectly good Luau, and it is
+    /// the in-scope check in `imports` that refuses it — for `(vide`, which is
+    /// not a binding.
+    #[test]
+    fn a_factory_that_lowers_but_names_nothing_is_left_to_the_scope_check() {
+        assert_eq!(
+            parse("[factory]\ncreate = \"(vide.create)\"\n").create,
+            "(vide.create)"
+        );
+    }
+
+    #[test]
+    fn a_factory_is_trimmed() {
+        // Otherwise the stray bytes reach both the in-scope check and the
+        // emitted call.
+        assert_eq!(
+            parse("[factory]\ncreate = \" vide.create \"\n").create,
+            "vide.create"
+        );
     }
 
     #[test]

@@ -1026,6 +1026,47 @@ mod tests {
         assert!(ok.is_ok(), "{ok:?}");
     }
 
+    /// A factory reached through a method call has to *emit* as well as
+    /// resolve. `scope:New("Frame")({})` is legal Luau — a method call is a
+    /// function call, so calling its result is too — and the spread form has to
+    /// hold up the same way. Neither was covered by the in-scope test alone,
+    /// which never reaches codegen.
+    #[test]
+    fn a_method_factory_emits_and_reparses() {
+        // The spread case below overflows the harness's own 2 MB inside
+        // full_moon — the very thing the CLI's `STACK` exists for.
+        std::thread::Builder::new()
+            .stack_size(16 * 1024 * 1024)
+            .spawn(|| {
+                let config = Config::with_create("scope:New");
+
+                let (plain, _) = compile_verified(
+                    "local scope = _G.s\nlocal e = <Frame Size={1}/>",
+                    &Vide,
+                    &config,
+                )
+                .expect("valid Luau");
+                assert!(
+                    plain.contains("scope:New(\"Frame\")({ Size = 1 })"),
+                    "{plain}"
+                );
+
+                let (spread, _) = compile_verified(
+                    "local scope = _G.s\nlocal p = {}\nlocal e = <Frame {p} Size={1}/>",
+                    &Vide,
+                    &config,
+                )
+                .expect("valid Luau");
+                assert!(
+                    spread.contains("scope:New(\"Frame\")(__luaux_merge(p, { Size = 1 }))"),
+                    "{spread}"
+                );
+            })
+            .expect("spawn")
+            .join()
+            .expect("method factory thread");
+    }
+
     /// `const` is Luau, and the import it declares binds like any other.
     ///
     /// Collecting bindings missed it, which failed in the least useful way
@@ -1235,8 +1276,9 @@ mod tests {
 
         // full_moon's recursive-descent parser has large stack frames in debug
         // builds — enough to exhaust a test thread's 2 MB on the inlined merge
-        // helper, though release and the CLI's main thread are both fine. Give
-        // it room rather than shrinking the fixtures to suit the harness.
+        // helper. Give it room rather than shrinking the fixtures to suit the
+        // harness. The CLI runs on a larger stack for the same reason; see
+        // `STACK` in luaux-cli's main.rs.
         std::thread::Builder::new()
             .stack_size(16 * 1024 * 1024)
             .spawn(move || {
