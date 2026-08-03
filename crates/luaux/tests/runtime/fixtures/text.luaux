@@ -1,0 +1,39 @@
+--!nocheck
+local vide = require("../vide/lib")
+local create, read, source = vide.create, vide.read, vide.source
+
+return function(check)
+	-- §3.2: interpolated text becomes a thunk that reads its sources, so it
+	-- tracks. This is the decision the whole reactive-text design rests on.
+	local count = source(0)
+
+	local frame = (
+		<Frame Name="Root">
+			<TextLabel>Clicked {count} times</TextLabel>
+		</Frame>
+	)
+
+	check("root named", frame.Name == "Root")
+
+	local label = frame:GetChildren()[1]
+	check("child parented by vide", label ~= nil)
+	check("initial text", label.Text == "Clicked 0 times")
+
+	count(3)
+	check("text tracks the source", label.Text == "Clicked 3 times")
+
+	-- Literal-only text stays a plain string, and a lone expression is emitted
+	-- bare so Vide's own source handling applies (§11.2).
+	local plain = (<TextLabel>Hello</TextLabel>)
+	check("literal text", plain.Text == "Hello")
+
+	local caption = source("first")
+	local lone = (<TextLabel>{caption}</TextLabel>)
+	check("lone expression initial", lone.Text == "first")
+	caption("second")
+	check("lone expression tracks", lone.Text == "second")
+
+	-- Escaping: `\{` is a literal brace, `\\` a backslash (Examples 10 and 13).
+	local escaped = (<TextLabel>literal \{text} and a ` tick</TextLabel>)
+	check("escapes decoded", escaped.Text == "literal {text} and a ` tick")
+end

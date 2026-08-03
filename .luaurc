@@ -1,0 +1,6 @@
+{
+  "aliases": {
+    "pkg": "packages/"
+  },
+  "languageMode": "strict"
+}

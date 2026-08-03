@@ -1,0 +1,8 @@
+[tools]
+rojo = "rojo-rbx/rojo@7.7.0"
+
+[indices]
+pesde = "https://github.com/pesde-pkg/index"
+
+[dependencies]
+vide = { name = "centau/vide", version = "^", index = "pesde" }

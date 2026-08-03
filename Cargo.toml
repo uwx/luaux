@@ -1,0 +1,21 @@
+[workspace]
+members = ["crates/luaux", "crates/luaux-cli"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.1"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/luau-xml/luaux"
+
+# Release binaries are downloaded per platform, so size is worth paying a
+# slower build for. Roughly halves the artifact.
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace.dependencies]
+# A path dependency also needs a version to be publishable: cargo strips
+# the path on publish and resolves the version from crates.io.
+luaux = { path = "crates/luaux", version = "0.1.0" }

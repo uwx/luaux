@@ -1,0 +1,72 @@
+--[[
+	Style presets via spread.
+
+	A spread is a plain table, so a stylesheet is plain data: name a group of
+	properties once and spread it wherever it applies. Precedence is source
+	order — anything written after the spread wins — so a variant is one
+	overriding attribute, not a second copy of the table.
+
+	There is no styling system underneath. {Styles.Panel} compiles to the same
+	table merge you would have written by hand.
+]]
+
+local Vide = require('@pkg/shared/vide')
+local create = Vide.create
+
+local Styles = {
+	Panel = {
+		Size = UDim2.fromOffset(320, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundColor3 = Color3.fromRGB(24, 24, 24),
+		BorderSizePixel = 0,
+	},
+
+	Heading = {
+		Size = UDim2.new(1, 0, 0, 26),
+		BackgroundTransparency = 1,
+		TextColor3 = Color3.new(1, 1, 1),
+		TextSize = 18,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	},
+
+	Body = {
+		Size = UDim2.new(1, 0, 0, 20),
+		BackgroundTransparency = 1,
+		TextColor3 = Color3.fromRGB(200, 200, 200),
+		TextSize = 14,
+		TextXAlignment = Enum.TextXAlignment.Left,
+	},
+
+	Button = {
+		Size = UDim2.new(1, 0, 0, 32),
+		BackgroundColor3 = Color3.fromRGB(0, 120, 255),
+		TextColor3 = Color3.new(1, 1, 1),
+		TextSize = 14,
+	},
+}
+
+return function()
+	return (
+		<Frame {Styles.Panel}>
+			<UICorner CornerRadius={UDim.new(0, 12)} />
+			<UIPadding
+				PaddingTop={UDim.new(0, 12)}
+				PaddingBottom={UDim.new(0, 12)}
+				PaddingLeft={UDim.new(0, 12)}
+				PaddingRight={UDim.new(0, 12)}
+			/>
+			<UIListLayout Padding={UDim.new(0, 8)} />
+
+			<TextLabel {Styles.Heading}>Style presets</TextLabel>
+			<TextLabel {Styles.Body}>Named once, spread where used.</TextLabel>
+
+			<!-- Written after the spread, so it beats Body's gray. -->
+			<TextLabel {Styles.Body} TextColor3={Color3.fromRGB(230, 180, 60)}>Overrides are one attribute each.</TextLabel>
+
+			<TextButton {Styles.Button}>Save</TextButton>
+
+			<!-- A variant, not a copy: everything else still comes from Button. -->
+			<TextButton {Styles.Button} BackgroundColor3={Color3.fromRGB(220, 70, 70)}>Delete</TextButton>
+		</Frame>
+	)
+end

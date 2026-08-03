@@ -1,0 +1,110 @@
+--[[
+	Derived values and interpolated text.
+
+	A HUD is numbers dressed up as strings. Interpolated text is the one place
+	LuauX makes reactivity implicit: each label below compiles to a thunk that
+	re-reads whatever it interpolates, so a label updates when — and only when
+	— a value it actually read changes.
+]]
+
+local Vide = require('@pkg/shared/vide')
+local create, source, derive = Vide.create, Vide.source, Vide.derive
+
+type Read<T> = () -> T
+
+--[[
+	`derive` memoises a computation over sources. The bar's size and its color
+	both read `fill`, so the division runs once per change, not once per
+	reader.
+]]
+local function HealthBar(health: Read<number>, max: Read<number>)
+	local fill = derive(function()
+		return math.clamp(health() / max(), 0, 1)
+	end)
+
+	return (
+		<Frame Size={UDim2.new(1, 0, 0, 8)} BackgroundColor3={Color3.fromRGB(58, 58, 58)}>
+			<UICorner CornerRadius={UDim.new(1, 0)} />
+
+			<!-- A function on a property key is reactive: plain Vide, no sugar. -->
+			<Frame
+				Size={function() return UDim2.fromScale(fill(), 1) end}
+				BackgroundColor3={function()
+					return if fill() > 0.2 then Color3.fromRGB(90, 200, 90)
+						else Color3.fromRGB(220, 70, 70)
+				end}
+			>
+				<UICorner CornerRadius={UDim.new(1, 0)} />
+			</Frame>
+		</Frame>
+	)
+end
+
+-- One style for every demo driver below. Styles.luaux is this pattern at scale.
+local Row = {
+	Size = UDim2.new(1, 0, 0, 28),
+	BackgroundColor3 = Color3.fromRGB(38, 38, 38),
+	TextColor3 = Color3.new(1, 1, 1),
+}
+
+return function()
+	local health = source(72)
+	local maxHealth = source(100)
+	local ammo = source(24)
+	local maxAmmo = 30
+	local kills = source(0)
+	local coins = source(0)
+	local wave = source(1)
+
+	local function fire()
+		if ammo() == 0 then
+			return
+		end
+		ammo(ammo() - 1)
+		kills(kills() + 1)
+	end
+
+	local function hit()
+		health(math.max(health() - 10, 0))
+	end
+
+	local function advance()
+		wave(wave() + 1)
+		coins(coins() + 25)
+		ammo(maxAmmo)
+		health(maxHealth())
+	end
+
+	return (
+		<Frame
+			Size={UDim2.fromOffset(260, 0)}
+			AutomaticSize={Enum.AutomaticSize.Y}
+			BackgroundColor3={Color3.fromRGB(24, 24, 24)}
+		>
+			<UICorner CornerRadius={UDim.new(0, 10)} />
+			<UIPadding
+				PaddingTop={UDim.new(0, 10)}
+				PaddingBottom={UDim.new(0, 10)}
+				PaddingLeft={UDim.new(0, 10)}
+				PaddingRight={UDim.new(0, 10)}
+			/>
+			<UIListLayout Padding={UDim.new(0, 6)} />
+
+			<!-- Reads two sources, so it tracks both. -->
+			<TextLabel TextSize={16}>HP {health} / {maxHealth}</TextLabel>
+
+			{HealthBar(health, maxHealth)}
+
+			<!-- A hole takes any expression. `maxAmmo` is a plain number, so it
+			     interpolates fine; it is just never going to change. -->
+			<TextLabel TextSize={14}>Ammo {ammo} / {maxAmmo}</TextLabel>
+
+			<TextLabel TextSize={14}>Wave {wave} — {kills} kills</TextLabel>
+			<TextLabel TextSize={14}>{coins} coins banked</TextLabel>
+
+			<TextButton {Row} Activated={fire}>Fire</TextButton>
+			<TextButton {Row} Activated={hit}>Take a hit</TextButton>
+			<TextButton {Row} Activated={advance}>Next wave</TextButton>
+		</Frame>
+	)
+end

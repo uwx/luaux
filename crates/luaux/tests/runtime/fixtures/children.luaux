@@ -1,0 +1,47 @@
+--!nocheck
+local vide = require("../vide/lib")
+local create = vide.create
+
+return function(check)
+	-- Vide parents children and recurses tables, so fragments and arrays need
+	-- no runtime representation of their own (§6.3).
+	local fragment = (
+		<>
+			<TextLabel Name="a" />
+			<TextLabel Name="b" />
+		</>
+	)
+
+	local frame = (
+		<Frame>
+			{fragment}
+			<TextLabel Name="c" />
+		</Frame>
+	)
+
+	local names = {}
+	for _, child in frame:GetChildren() do
+		table.insert(names, child.Name)
+	end
+	table.sort(names)
+
+	check("fragment flattened into parent", #names == 3)
+	check("fragment children present", names[1] == "a" and names[2] == "b")
+	check("sibling present", names[3] == "c")
+
+	-- A component is a plain function taking one table, so it is
+	-- interchangeable with an intrinsic at the call site (§3.3).
+	local function Row(props)
+		return (<TextLabel Name={props.Name} Text="row" />)
+	end
+
+	local composed = (
+		<Frame>
+			<Row Name="from-component" />
+		</Frame>
+	)
+
+	local row = composed:GetChildren()[1]
+	check("component invoked", row ~= nil and row.Name == "from-component")
+	check("component props applied", row.Text == "row")
+end

@@ -1,0 +1,4 @@
+# Nix evaluates these byte-for-byte on Linux; autocrlf turning them CRLF on a
+# Windows checkout would change their hashes and can upset the parser.
+*.nix text eol=lf
+flake.lock text eol=lf

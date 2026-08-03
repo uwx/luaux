@@ -1,0 +1,138 @@
+--[[
+	Class components.
+
+	Luau has no classes, and LuauX needs none: a component compiles to a plain
+	call, so anything callable works. That includes a table whose metatable has
+	`__call`, which is how a class becomes usable as a tag.
+]]
+
+local Vide = require('@pkg/shared/vide')
+local create, source = Vide.create, Vide.source
+
+type Source<T> = Vide.Source<T>
+
+-- What a caller passes: plain values.
+export type ProfileProps = {
+	Name: string,
+	Age: number,
+}
+
+--[[
+	What the instance holds: sources, not plain fields.
+
+	Vide tracks *reads of sources*, so a plain field registers no dependency and
+	assigning to it later would update nothing. This is the difference between a
+	class that renders once and one that stays live.
+]]
+export type Profile = typeof(setmetatable(
+	{} :: {
+		Name: Source<string>,
+		Age: Source<number>,
+	},
+	{} :: ProfileImpl
+))
+
+local Profile = {}
+Profile.__index = Profile
+
+--[[
+	`__index` is read off `Profile` itself, because that is what instances carry
+	as their metatable. `__call` is different: Lua looks for it on *Profile's*
+	metatable, so `function Profile.__call()` would define a field nothing ever
+	consults, and `<Profile />` would fail with "attempt to call a table value".
+]]
+setmetatable(Profile, {
+	__call = function(class, props: ProfileProps)
+		return class.new(props):Render()
+	end,
+})
+
+-- Splitting construction from rendering keeps state and view separate, and is
+-- what lets `__call` do both in one step for the tag form.
+function Profile.new(props: ProfileProps): Profile
+	return setmetatable({
+		Name = source(props.Name),
+		Age = source(props.Age),
+	}, Profile)
+end
+
+function Profile.Render(self: Profile)
+	local NameField = (
+		<TextBox
+			Size={UDim2.new(1, 0, 0, 28)}
+			BackgroundColor3={Color3.fromRGB(38, 38, 38)}
+			TextColor3={Color3.new(1, 1, 1)}
+			PlaceholderText="New name"
+			Text=""
+		>
+			<UICorner CornerRadius={UDim.new(0, 6)} />
+		</TextBox>
+	)
+
+	local function changeName()
+		-- Call the source. Assigning `self.Name = ...` would replace it with a
+		-- plain string and silently break every reader.
+		self.Name(NameField.Text)
+		NameField.Text = ''
+	end
+
+	return (
+		<Frame
+			Size={UDim2.fromOffset(320, 0)}
+			AutomaticSize={Enum.AutomaticSize.Y}
+			BackgroundColor3={Color3.fromRGB(24, 24, 24)}
+		>
+			<UICorner CornerRadius={UDim.new(0, 12)} />
+			<UIPadding
+				PaddingTop={UDim.new(0, 12)}
+				PaddingBottom={UDim.new(0, 12)}
+				PaddingLeft={UDim.new(0, 12)}
+				PaddingRight={UDim.new(0, 12)}
+			/>
+			<UIListLayout Padding={UDim.new(0, 8)} />
+
+			<Frame
+				Size={UDim2.new(1, 0, 0, 0)}
+				AutomaticSize={Enum.AutomaticSize.Y}
+				BackgroundTransparency={1}
+			>
+				<UIListLayout Padding={UDim.new(0, 6)} />
+
+				<TextLabel
+					Size={UDim2.new(1, 0, 0, 24)}
+					BackgroundTransparency={1}
+					TextColor3={Color3.new(1, 1, 1)}
+					TextSize={18}
+					TextXAlignment={Enum.TextXAlignment.Left}
+				>Name: {self.Name}</TextLabel>
+
+				<!--
+					The same TextBox the handler reads. Building a second
+					<TextBox/> here instead would leave this one orphaned.
+				-->
+				{NameField}
+
+				<TextButton
+					Size={UDim2.new(1, 0, 0, 32)}
+					BackgroundColor3={Color3.fromRGB(0, 120, 255)}
+					TextColor3={Color3.new(1, 1, 1)}
+					Text="Change Name"
+					Activated={changeName}
+				>
+					<UICorner CornerRadius={UDim.new(0, 6)} />
+				</TextButton>
+			</Frame>
+
+			<TextLabel
+				Size={UDim2.new(1, 0, 0, 20)}
+				BackgroundTransparency={1}
+				TextColor3={Color3.fromRGB(170, 170, 170)}
+				TextXAlignment={Enum.TextXAlignment.Left}
+			>Age: {self.Age}</TextLabel>
+		</Frame>
+	)
+end
+
+type ProfileImpl = typeof(Profile)
+
+return Profile

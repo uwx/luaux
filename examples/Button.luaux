@@ -1,0 +1,96 @@
+--[[
+	Functional components.
+
+	A component is any function taking a single table. Children arrive in that
+	table under numeric keys, exactly as they do for a built-in class, so a
+	component and an intrinsic are interchangeable at the call site.
+]]
+
+local Vide = require('@pkg/shared/vide')
+local create, source = Vide.create, Vide.source
+
+type Source<T> = Vide.Source<T>
+
+export type ButtonProps = {
+	Label: string | Source<string>,
+	OnClick: (...any) -> (),
+	Color: Color3?,
+}
+
+--[[
+	Props are read by name. `Label` may be a plain string or a source, and
+	neither case needs handling here: Vide treats a function on a property key
+	as reactive and anything else as a plain assignment.
+]]
+local function Button(props: ButtonProps)
+	return (
+		<TextButton
+			Size={UDim2.fromOffset(160, 40)}
+			BackgroundColor3={props.Color or Color3.fromRGB(30, 30, 30)}
+			TextColor3={Color3.new(1, 1, 1)}
+			Activated={props.OnClick}
+			Text={props.Label}
+		>
+			<UICorner CornerRadius={UDim.new(0, 8)} />
+		</TextButton>
+	)
+end
+
+--[[
+	Spread forwards a whole props table. Anything written after it wins, so this
+	is how a component supplies a default its caller can still override.
+]]
+local function PrimaryButton(props: ButtonProps)
+	return (<Button {props} Color={Color3.fromRGB(0, 120, 255)} />)
+end
+
+--[[
+	A component that takes children reads them as numeric keys, which is exactly
+	what `{props}` in child position hands to Vide.
+]]
+local function Card(props: { Title: string })
+	return (
+		<Frame
+			Size={UDim2.fromOffset(320, 0)}
+			AutomaticSize={Enum.AutomaticSize.Y}
+			BackgroundColor3={Color3.fromRGB(24, 24, 24)}
+		>
+			<UICorner CornerRadius={UDim.new(0, 12)} />
+			<UIPadding
+				PaddingTop={UDim.new(0, 12)}
+				PaddingBottom={UDim.new(0, 12)}
+				PaddingLeft={UDim.new(0, 12)}
+				PaddingRight={UDim.new(0, 12)}
+			/>
+			<UIListLayout Padding={UDim.new(0, 8)} />
+
+			<TextLabel TextSize={18}>{props.Title}</TextLabel>
+
+			<!-- The caller's children. Vide recurses the table it finds here. -->
+			{props}
+		</Frame>
+	)
+end
+
+return function()
+	local clicks = source(0)
+
+	return (
+		<Card Title="Functional components">
+			<!-- Interpolated text is the one place reactivity is implicit: the
+			     compiler wraps it in a thunk so it tracks `clicks`. -->
+			<TextLabel>Clicked {clicks} times</TextLabel>
+
+			<Button
+				Label="Click me"
+				OnClick={function() clicks(clicks() + 1) end}
+			/>
+
+			<!-- Same component, different default, via spread. -->
+			<PrimaryButton
+				Label={function() return `Reset (${clicks()})` end}
+				OnClick={function() clicks(0) end}
+			/>
+		</Card>
+	)
+end

@@ -1,0 +1,9 @@
+[build]
+in = "examples"
+out = "build"
+include = ["*"]
+exclude = ["**/*.spec.luaux"]
+clean = true
+
+[factory]
+create = "create"

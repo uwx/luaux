@@ -1,0 +1,34 @@
+--!nocheck
+local vide = require("../vide/lib")
+local create = vide.create
+
+return function(check)
+	-- A nil child is emitted verbatim, leaving a hole in the array part. That
+	-- is safe because Vide iterates with generalised `for k, v in t`, which
+	-- skips absent keys; `ipairs` would stop at the hole and silently drop every
+	-- sibling after it. This fixture is what proves the distinction, and what
+	-- would catch it if Vide ever changed.
+	local frame = (
+		<Frame>
+			<TextLabel Name="before" />
+			{false and (<TextLabel Name="absent" />) or nil}
+			<TextLabel Name="after" />
+		</Frame>
+	)
+
+	local names = {}
+	for _, child in frame:GetChildren() do
+		table.insert(names, child.Name)
+	end
+	table.sort(names)
+
+	check("nil child dropped", #names == 2)
+	check("sibling after a nil survives", names[1] == "after" and names[2] == "before")
+
+	local shown = (
+		<Frame>
+			{true and (<TextLabel Name="present" />) or nil}
+		</Frame>
+	)
+	check("truthy conditional renders", shown:GetChildren()[1].Name == "present")
+end

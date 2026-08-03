@@ -1,0 +1,65 @@
+--!nocheck
+local vide = require("../vide/lib")
+local create, source, derive = vide.create, vide.source, vide.derive
+local indexes, show = vide.indexes, vide.show
+
+-- The patterns the examples/ directory teaches, executed against real Vide.
+-- Compiling them proves the output is well-formed; only running them proves the
+-- emitted table means what the example claims.
+return function(check)
+	-- Spread on a *component*, with a later attribute overriding it.
+	local function Button(props)
+		return (<TextButton Name="Btn" Text={props.Label} BackgroundTransparency={props.Fade} />)
+	end
+	local function Primary(props)
+		return (<Button {props} Fade={0.5} />)
+	end
+	local b = Primary({ Label = "go", Fade = 0 })
+	check("spread merges into a component", b.Text == "go")
+	check("a later attribute beats the spread", b.BackgroundTransparency == 0.5)
+
+	-- `{props}` in child position hands Vide the caller's numeric keys.
+	local function Card(props)
+		return (<Frame Name="Card"><UICorner />{props}</Frame>)
+	end
+	local card = (<Card><TextLabel Name="a" /><TextLabel Name="b" /></Card>)
+	local names = {}
+	for _, c in card:GetChildren() do table.insert(names, c.Name) end
+	table.sort(names)
+	check("children forwarded through a component", #names == 3)
+	check("both caller children present", names[2] == "a" and names[3] == "b")
+
+	-- `indexes` returns a source of children; Vide recurses it.
+	local todos = source({ { Text = "one", Done = false } })
+	local list = (
+		<Frame Name="List">
+			{indexes(todos, function(todo)
+				return (<TextLabel Name="Row" Text={function() return todo().Text end} />)
+			end)}
+		</Frame>
+	)
+	check("indexes renders a row", #list:GetChildren() == 1)
+	check("row text", list:GetChildren()[1].Text == "one")
+
+	todos({ { Text = "one", Done = false }, { Text = "two", Done = false } })
+	check("indexes adds a row reactively", #list:GetChildren() == 2)
+
+	-- `derive` read through interpolated text.
+	local remaining = derive(function() return #todos() end)
+	local label = (<TextLabel>{remaining} remaining</TextLabel>)
+	check("derived value in text", label.Text == "2 remaining")
+	todos({})
+	check("text tracks the derived value", label.Text == "0 remaining")
+
+	-- `show` swaps children reactively.
+	local empty = (
+		<Frame Name="Empty">
+			{show(function() return #todos() == 0 end, function()
+				return (<TextLabel Name="Placeholder" />)
+			end)}
+		</Frame>
+	)
+	check("show renders when true", #empty:GetChildren() == 1)
+	todos({ { Text = "x", Done = false } })
+	check("show removes when false", #empty:GetChildren() == 0)
+end

@@ -1,0 +1,33 @@
+--!nocheck
+local vide = require("../vide/lib")
+local create = vide.create
+
+return function(check)
+	-- The merge helper is inlined, so a spread costs no dependency (§7).
+	local base = { Name = "base", Text = "from-spread" }
+
+	-- A literal after a spread wins; source order decides precedence.
+	local later = (<TextLabel {base} Text="from-literal" />)
+	check("spread applied", later.Name == "base")
+	check("literal after spread wins", later.Text == "from-literal")
+
+	-- ...and a spread after a literal wins, for the same reason.
+	local earlier = (<TextLabel Text="from-literal" {base} />)
+	check("spread after literal wins", earlier.Text == "from-spread")
+
+	-- Numeric keys concatenate, so a spread and literal children coexist.
+	local withChildren = (
+		<Frame {{ (<TextLabel Name="spread-child" />) }}>
+			<TextLabel Name="literal-child" />
+		</Frame>
+	)
+
+	local names = {}
+	for _, child in withChildren:GetChildren() do
+		table.insert(names, child.Name)
+	end
+	table.sort(names)
+
+	check("spread and literal children coexist", #names == 2)
+	check("both children present", names[1] == "literal-child" and names[2] == "spread-child")
+end

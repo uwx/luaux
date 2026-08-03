@@ -1,0 +1,134 @@
+--[[
+	Fragments and conditional mounting.
+
+	A fragment compiles to a plain table, and Vide recurses tables it finds in
+	child position. That is what lets a component return siblings — here, a
+	pair of buttons — while its caller keeps ownership of layout.
+]]
+
+local Vide = require('@pkg/shared/vide')
+local create, source, show = Vide.create, Vide.source, Vide.show
+
+export type ConfirmDialogProps = {
+	Title: string,
+	Message: string,
+	OnChoice: (confirmed: boolean) -> (),
+}
+
+-- What both buttons share. A spread is a plain table, so the pair can differ
+-- by exactly the attributes written after it.
+local ActionStyle = {
+	Size = UDim2.new(0.5, -4, 0, 32),
+	BackgroundColor3 = Color3.fromRGB(60, 60, 60),
+	TextColor3 = Color3.new(1, 1, 1),
+	TextSize = 14,
+}
+
+--[[
+	Two buttons, no wrapper Frame. Whether they sit in a row or a column is
+	the caller's decision, made with whichever layout the caller already has.
+]]
+local function Actions(props: ConfirmDialogProps)
+	return (
+		<>
+			<TextButton {ActionStyle} Activated={function() props.OnChoice(false) end}>
+				Cancel
+				<UICorner CornerRadius={UDim.new(0, 6)} />
+			</TextButton>
+			<TextButton {ActionStyle} BackgroundColor3={Color3.fromRGB(220, 70, 70)} Activated={function() props.OnChoice(true) end}>
+				Confirm
+				<UICorner CornerRadius={UDim.new(0, 6)} />
+			</TextButton>
+		</>
+	)
+end
+
+--[[
+	Not named `Dialog`: a tag resolves to a Roblox class before anything bound
+	in the file, and Roblox already ships a class by that name — so `<Dialog>`
+	would mean the NPC conversation instance, not this function.
+]]
+local function ConfirmDialog(props: ConfirmDialogProps)
+	return (
+		<Frame
+			Size={UDim2.fromOffset(300, 0)}
+			AutomaticSize={Enum.AutomaticSize.Y}
+			BackgroundColor3={Color3.fromRGB(30, 30, 30)}
+		>
+			<UICorner CornerRadius={UDim.new(0, 12)} />
+			<UIStroke Color={Color3.fromRGB(70, 70, 70)} />
+			<UIPadding
+				PaddingTop={UDim.new(0, 12)}
+				PaddingBottom={UDim.new(0, 12)}
+				PaddingLeft={UDim.new(0, 12)}
+				PaddingRight={UDim.new(0, 12)}
+			/>
+			<UIListLayout Padding={UDim.new(0, 8)} />
+
+			<TextLabel
+				Size={UDim2.new(1, 0, 0, 24)}
+				BackgroundTransparency={1}
+				TextColor3={Color3.new(1, 1, 1)}
+				TextSize={18}
+			>{props.Title}</TextLabel>
+
+			<!-- `TextWrapped` is shorthand for TextWrapped={true}. -->
+			<TextLabel
+				Size={UDim2.new(1, 0, 0, 36)}
+				BackgroundTransparency={1}
+				TextColor3={Color3.fromRGB(200, 200, 200)}
+				TextSize={14}
+				TextWrapped
+			>{props.Message}</TextLabel>
+
+			<!-- The fragment's buttons land here, laid out by this row. -->
+			<Frame Size={UDim2.new(1, 0, 0, 32)} BackgroundTransparency={1}>
+				<UIListLayout FillDirection={Enum.FillDirection.Horizontal} Padding={UDim.new(0, 8)} />
+				<Actions {props} />
+			</Frame>
+		</Frame>
+	)
+end
+
+return function()
+	local open = source(false)
+	local status = source('nothing yet')
+
+	local function choose(confirmed: boolean)
+		status(if confirmed then 'deleted' else 'kept')
+		open(false)
+	end
+
+	return (
+		<Frame
+			Size={UDim2.fromOffset(320, 0)}
+			AutomaticSize={Enum.AutomaticSize.Y}
+			BackgroundColor3={Color3.fromRGB(24, 24, 24)}
+		>
+			<UICorner CornerRadius={UDim.new(0, 12)} />
+			<UIStroke Color={Color3.fromRGB(70, 70, 70)} />
+			<UIListLayout Padding={UDim.new(0, 8)} />
+
+			<TextLabel TextSize={14}>Last choice: {status}</TextLabel>
+
+			<!-- The dialog's shared style, one override later. -->
+			<TextButton {ActionStyle} Size={UDim2.new(1, 0, 0, 32)} Activated={function() open(true) end}>Delete everything</TextButton>
+
+			<!--
+				`show` mounts on open and unmounts on close. The inline form
+				{open() and <ConfirmDialog/> or nil} would evaluate once and
+				never again — the static_conditional_child lint exists for
+				exactly that mistake.
+			-->
+			{show(open, function()
+				return (
+					<ConfirmDialog
+						Title="Delete everything?"
+						Message="This cannot be undone."
+						OnChoice={choose}
+					/>
+				)
+			end)}
+		</Frame>
+	)
+end

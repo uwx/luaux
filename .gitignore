@@ -1,0 +1,28 @@
+# Any markdown other than README.
+/*.md
+!README.md
+
+# Rust build output.
+/target
+
+# Nix build output symlink.
+/result
+
+# LuauX build output.
+/build
+
+# OS and editor cruft.
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+
+# Committed on purpose — listed so nobody "tidies" them away later:
+#
+#   Cargo.lock                            this workspace ships a binary
+#   crates/luaux/src/roblox/generated.rs  generated, but checked in so a build
+#                                         needs neither Python nor network
+#   examples/Counter.luau                 generated, kept as a golden sample of
+#                                         what codegen produces
+packages/
+.lpm-patch/

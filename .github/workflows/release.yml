@@ -1,0 +1,197 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, for a dry run against an existing release"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The tag is the source of truth for the version, but Cargo.toml is what ends
+  # up inside the binary and on crates.io. A mismatch there ships a binary that
+  # reports the wrong version forever, so fail before building anything.
+  verify:
+    name: verify version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: check
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="${{ github.event.inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          manifest=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$version" != "$manifest" ]; then
+            echo "::error::tag $tag implies $version but Cargo.toml says $manifest"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: ${{ matrix.label }}
+    needs: verify
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # `smoke` is whether the runner can execute what it just built.
+          # Intel macOS is cross-compiled from an ARM runner, because GitHub
+          # retired macos-13 and every remaining macOS image is aarch64.
+          - { os: ubuntu-latest,  target: x86_64-unknown-linux-gnu,  label: linux-x86_64,   smoke: true  }
+          - { os: macos-latest,   target: aarch64-apple-darwin,      label: macos-aarch64,  smoke: true  }
+          - { os: macos-latest,   target: x86_64-apple-darwin,       label: macos-x86_64,   smoke: false }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc,    label: windows-x86_64, smoke: true  }
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - run: cargo build --release --locked --target ${{ matrix.target }} -p luaux-cli
+
+      # Compile something with the artifact that is about to ship. Asserting it
+      # merely prints usage would pass for a binary that cannot compile at all —
+      # and `luaux` with no arguments exits 2 by design, which `set -o pipefail`
+      # turns into a failed step even when the assertion matches.
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          bin="$GITHUB_WORKSPACE/target/${{ matrix.target }}/release/luaux"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            bin="$bin.exe"
+          fi
+
+          work="$RUNNER_TEMP/smoke"
+          rm -rf "$work" && mkdir -p "$work"
+          printf 'local create = vide.create\nlocal a = <Frame Size={1} />\n' > "$work/S.luaux"
+
+          "$bin" build "$work"
+          grep -q 'create("Frame")' "$work/S.luau"
+
+      # Rokit matches release assets by the os and arch substrings in their
+      # names, so this shape is load-bearing rather than cosmetic. It mirrors
+      # what lune ships, which is the reference rokit-installable tool.
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="luaux-${{ needs.verify.outputs.version }}-${{ matrix.label }}"
+          staging="$RUNNER_TEMP/$name"
+          mkdir -p "$staging"
+
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp "target/${{ matrix.target }}/release/luaux.exe" "$staging/"
+          else
+            cp "target/${{ matrix.target }}/release/luaux" "$staging/"
+          fi
+          cp README.md "$staging/"
+
+          # The archive holds the executable at its root, which is where rokit
+          # looks. Do not nest it in a directory.
+          cd "$staging"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "$GITHUB_WORKSPACE/$name.zip" ./*
+          else
+            zip -r "$GITHUB_WORKSPACE/$name.zip" ./*
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: luaux-*.zip
+          if-no-files-found: error
+
+  # A tag must not ship with broken Nix packaging. `nix run github:luau-xml/luaux`
+  # builds from source at the tag, so this is the release artifact for Nix users
+  # as much as the zips are for everyone else — it gets the same smoke test.
+  nix:
+    name: nix build
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v31
+        with:
+          extra_nix_config: |
+            experimental-features = nix-command flakes
+      - run: nix build --print-build-logs
+
+      - name: Smoke test
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$RUNNER_TEMP/nix-smoke"
+          rm -rf "$work" && mkdir -p "$work"
+          printf 'local create = vide.create\nlocal a = <Frame Size={1} />\n' > "$work/S.luaux"
+
+          ./result/bin/luaux build "$work"
+          grep -q 'create("Frame")' "$work/S.luau"
+
+  release:
+    name: publish release
+    needs: [verify, build, nix]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum luaux-*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      # Notes are generated from the pull requests merged since the previous
+      # tag, so the release history is whatever the PR titles said. The release
+      # is a draft, leaving room to edit before publishing.
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          draft: true
+          generate_release_notes: true
+          files: |
+            dist/luaux-*.zip
+            dist/SHA256SUMS
+
+  # Order matters: luaux must exist on crates.io before luaux-cli, which
+  # depends on it, can resolve. Runs only for a real tag push. Gated on the
+  # nix job too: publishing to crates.io is irreversible, so everything that
+  # would make this tag a bad release has to fail before it runs.
+  crates:
+    name: publish to crates.io
+    needs: [verify, build, nix]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment: crates-io
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo publish --locked -p luaux
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      - run: cargo publish --locked -p luaux-cli
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

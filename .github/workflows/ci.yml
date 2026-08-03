@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push supersedes the one before it, so let the obsolete run go rather
+# than paying for a result nobody will read. Keyed by ref, so main and each PR
+# cancel only themselves.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  lint:
+    name: fmt + clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Three platforms because the CLI is mostly path handling — globs matched
+      # against relative paths, output trees mirrored from input trees — and
+      # Windows separators are exactly where that breaks.
+      - run: cargo test --workspace
+
+  vide:
+    name: golden runtime tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # These tests *run* the generated code against real Vide. Every other test
+      # checks that output is well-formed; only this one checks that it behaves.
+      # It caught a wrong claim about Vide's child iteration that had already
+      # made it into the design docs.
+      - name: Check out Vide
+        uses: actions/checkout@v4
+        with:
+          repository: centau/vide
+          path: vide
+
+      - name: Install Lune
+        run: |
+          curl -fsSL -o lune.zip \
+            https://github.com/lune-org/lune/releases/download/v${LUNE_VERSION}/lune-${LUNE_VERSION}-linux-x86_64.zip
+          unzip -o lune.zip -d "$RUNNER_TEMP/lune"
+          chmod +x "$RUNNER_TEMP/lune/lune"
+        env:
+          LUNE_VERSION: 0.10.5
+
+      # The suite skips itself and passes when these are unset, so assert it
+      # actually ran rather than trusting a green tick.
+      - name: Run against Vide
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Absolute, because cargo runs a test binary with its working directory
+          # set to the *crate* root, not the workspace root. A relative "vide"
+          # resolves to crates/luaux/vide and finds nothing.
+          LUAUX_VIDE="$GITHUB_WORKSPACE/vide" LUAUX_LUNE="$RUNNER_TEMP/lune/lune" \
+            cargo test -p luaux --test runtime -- --nocapture 2>&1 | tee result.txt
+          grep -q "check(s), 0 failure(s)" result.txt \
+            || { echo "::error::runtime suite reported no checks — it skipped"; exit 1; }
+
+  corpus:
+    name: false-positive sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      # luaux decides whether `<` opens markup by looking at the previous token.
+      # A false positive means valid Luau stops compiling, which is the worst
+      # failure this project has — so it is swept over real Luau every run.
+      - uses: actions/checkout@v4
+        with:
+          repository: luau-lang/luau
+          path: corpus/luau
+      - uses: actions/checkout@v4
+        with:
+          repository: centau/vide
+          path: corpus/vide
+
+      - name: Sweep
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Absolute for the same reason as the Vide job above.
+          LUAUX_CORPUS="$GITHUB_WORKSPACE/corpus/luau:$GITHUB_WORKSPACE/corpus/vide" \
+            cargo test -p luaux --test corpus -- --nocapture 2>&1 | tee result.txt
+          # Assert on the positive signal. The test also prints "N skipped" for
+          # files it could not read, so grepping for "skipped" matches a healthy
+          # run and would fail every build.
+          grep -qE "corpus: [0-9]+ scanned" result.txt \
+            || { echo "::error::corpus test skipped — LUAUX_CORPUS did not take"; exit 1; }

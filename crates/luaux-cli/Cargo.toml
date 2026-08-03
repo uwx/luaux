@@ -1,0 +1,19 @@
+[package]
+name = "luaux-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "CLI for luaux — LuauX, JSX-style markup for Luau"
+
+[[bin]]
+name = "luaux"
+path = "src/main.rs"
+
+[dependencies]
+globset = "0.4.19"
+luaux.workspace = true
+miette = { version = "7.6.0", features = ["fancy"] }
+notify = { version = "8.2.0", default-features = false, features = ["macos_fsevent"] }
+serde_json = "1.0.151"
+toml = "1.1.4"

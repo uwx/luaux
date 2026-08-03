@@ -1,0 +1,15 @@
+[package]
+name = "luaux"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "LuauX — JSX-style markup for Luau"
+
+[dependencies]
+full_moon = { version = "2.2.0", features = ["luau"] }
+globset = "0.4.19"
+serde = { version = "1.0.229", features = ["derive"] }
+toml = "1.1.4"
+
+[dev-dependencies]

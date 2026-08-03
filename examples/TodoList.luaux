@@ -1,0 +1,122 @@
+--[[
+	State, dynamic lists, and conditional children.
+
+	Reactivity here is entirely Vide's. LuauX contributes nothing at runtime; it
+	only decides where your expressions land in the table Vide receives.
+]]
+
+local Vide = require('@pkg/shared/vide')
+local create, source, derive = Vide.create, Vide.source, Vide.derive
+local indexes, show = Vide.indexes, Vide.show
+
+-- What `source()` returns: readable and writable.
+type Source<T> = Vide.Source<T>
+
+--[[
+	What `indexes` and `show` hand their component: **read only**.
+
+	Vide exports `Source<T>` as `(() -> T) & ((T) -> T)`, but its list helpers
+	declare their own narrower `() -> T` internally. Typing a row's parameter as
+	the exported `Source` demands write access the helper never supplies, and
+	function parameters are contravariant, so the whole component is rejected.
+]]
+type Read<T> = () -> T
+
+export type Todo = {
+	Text: string,
+	Done: boolean,
+}
+
+local function Row(todo: Read<Todo>, onToggle: (...any) -> ())
+	return (
+		<TextButton
+			Size={UDim2.new(1, 0, 0, 28)}
+			BackgroundTransparency={1}
+			TextXAlignment={Enum.TextXAlignment.Left}
+			Activated={onToggle}
+			Text={function()
+				local item = todo()
+				return if item.Done then `[x] {item.Text}` else `[ ] {item.Text}`
+			end}
+		/>
+	)
+end
+
+return function()
+	local todos: Source<{ Todo }> = source({})
+	local draft = source('')
+
+	-- `derive` memoises a computed value. Reading it inside interpolated text
+	-- makes the label track it, the same as reading a source would.
+	local remaining = derive(function()
+		local count = 0
+		for _, todo in todos() do
+			if not todo.Done then
+				count += 1
+			end
+		end
+		return count
+	end)
+
+	local function add()
+		if draft() == '' then
+			return
+		end
+
+		-- Sources hold immutable values: replace the table rather than mutating
+		-- it, or nothing downstream is told anything changed.
+		local next = table.clone(todos())
+		table.insert(next, { Text = draft(), Done = false })
+		todos(next)
+		draft('')
+	end
+
+	local function toggle(index: number)
+		local next = table.clone(todos())
+		local item = table.clone(next[index])
+		item.Done = not item.Done
+		next[index] = item
+		todos(next)
+	end
+
+	return (
+		<Frame
+			Size={UDim2.fromOffset(320, 0)}
+			AutomaticSize={Enum.AutomaticSize.Y}
+			BackgroundColor3={Color3.fromRGB(24, 24, 24)}
+		>
+			<UICorner CornerRadius={UDim.new(0, 12)} />
+			<UIListLayout Padding={UDim.new(0, 6)} />
+
+			<TextLabel TextSize={18}>{remaining} remaining</TextLabel>
+
+			<TextBox
+				Size={UDim2.new(1, 0, 0, 28)}
+				Text={draft}
+				PlaceholderText="What needs doing?"
+				FocusLost={add}
+			/>
+
+			<!--
+				`indexes` keeps one instance per position and updates it in place,
+				so editing an entry does not rebuild the row. It returns a source
+				of children, which Vide recurses.
+			-->
+			{indexes(todos, function(todo, index)
+				return Row(todo, function() toggle(index) end)
+			end)}
+
+			<!--
+				`show` swaps children reactively. Writing the condition inline as
+				{#todos() == 0 and <TextLabel/> or nil} would evaluate once at
+				construction and never update, which is what the
+				`static_conditional_child` lint warns about.
+			-->
+			{show(function()
+				return #todos() == 0
+			end, function()
+				return (<TextLabel TextTransparency={0.5}>Nothing to do</TextLabel>)
+			end)}
+		</Frame>
+	)
+end
