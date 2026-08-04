@@ -51,6 +51,25 @@ pub const MERGE_HELPER: &str = "__luaux_merge";
 ///
 /// Interpolated text builds a string, and a source is a function — so it has to
 /// be called, while a plain value must pass through untouched.
+///
+/// The call is cast, for the same kind of reason the merge helper's return is
+/// annotated: left to inference the `v()` inside constrains the parameter to
+/// `() -> (a, b...)`, and the `type(v) == "function"` guard does not widen it
+/// back. The helper then rejects every value that is *not* a source:
+///
+/// ```text
+/// TypeError: Expected this to be '() -> (a, b...)', but got 'number'
+/// ```
+///
+/// which is exactly backwards, since a plain value is the case that guard exists
+/// to serve. The cast detaches the call from the parameter's type, which is
+/// where the constraint came from.
+///
+/// The parameter is deliberately **not** annotated. `v: any` silences the error
+/// too, but `any` subsumes `nil`, so the parameter becomes optional and a hole
+/// holding a call that returns nothing — `{f()}` where `f` returns `()` — stops
+/// being reported as an argument-count mismatch. Inference gives the better
+/// signature here; the annotation only looks tidier.
 pub const READ_HELPER: &str = "__luaux_read";
 
 /// Both helpers on one line each, so injection stays line-preserving.
@@ -59,7 +78,7 @@ for i = 1, select(\"#\", ...) do local g = select(i, ...) if g ~= nil then for k
 if type(k) == \"number\" then n += 1 m[n] = v else m[k] = v end end end end return m end";
 
 const READ_HELPER_SOURCE: &str =
-    "local function __luaux_read(v) return if type(v) == \"function\" then v() else v end";
+    "local function __luaux_read(v) return if type(v) == \"function\" then (v :: () -> any)() else v end";
 
 /// Prepends the helpers this output uses, and checks the factory is reachable.
 pub fn inject(
@@ -152,6 +171,39 @@ mod tests {
             MERGE_HELPER_SOURCE.contains("__luaux_merge(...): any"),
             "{MERGE_HELPER_SOURCE}"
         );
+    }
+
+    /// Left to inference the `v()` inside constrains the parameter to a
+    /// function, so interpolating anything else — a number, a string, a table —
+    /// is a type error at the point the author wrote a perfectly ordinary value.
+    ///
+    /// The cast is what fixes that, and it is the only part that may not be
+    /// simplified away. Annotating the parameter `any` silences the same error
+    /// while making it optional, which costs the argument-count check on a hole
+    /// holding a call that returns nothing.
+    #[test]
+    fn the_read_helper_accepts_a_value_that_is_not_a_source() {
+        assert!(
+            READ_HELPER_SOURCE.contains("(v :: () -> any)()"),
+            "the cast is what detaches the call from the parameter's type: \
+             {READ_HELPER_SOURCE}"
+        );
+        assert!(
+            !READ_HELPER_SOURCE.contains("(v: any)"),
+            "an `any` parameter is optional, and costs the arity check: \
+             {READ_HELPER_SOURCE}"
+        );
+    }
+
+    /// Both helpers are injected onto the line of the first statement, so a
+    /// newline anywhere in either would shift every line below it.
+    ///
+    /// `lines()` will not do: it drops a trailing empty segment, so it reports
+    /// one line for a literal that ends in the newline this is looking for.
+    #[test]
+    fn the_helpers_contain_no_newline() {
+        assert!(!MERGE_HELPER_SOURCE.contains('\n'), "{MERGE_HELPER_SOURCE}");
+        assert!(!READ_HELPER_SOURCE.contains('\n'), "{READ_HELPER_SOURCE}");
     }
 
     fn all() -> Helpers {
