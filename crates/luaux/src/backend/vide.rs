@@ -185,6 +185,16 @@ fn emit_element(
                     writer.break_or_space(offset);
                 }
             }
+        } else if let Group::Spread(spread) = group {
+            // A *leading* spread still belongs on the line it was written on. A
+            // table positions each of its own entries, so it needs nothing here
+            // — but a spread is pushed verbatim, and without this it lands on
+            // the opening tag's line while the line it was written on comes out
+            // blank. Hovering it then asks about a line with nothing on it.
+            //
+            // `to` is a no-op when the spread is already on this line, so a
+            // single-line element is untouched.
+            writer.to(spreads[*spread].0);
         }
 
         match group {
@@ -192,6 +202,16 @@ fn emit_element(
             Group::Table(table) => emit_table(&groups[*table], element.span, context, writer)?,
         }
     }
+
+    // The closing parenthesis sits on the line of the closing tag, so the
+    // element spans exactly the lines the LuauX did.
+    //
+    // `emit_table` already does this for the table it emits, which covers most
+    // elements — but an element whose attributes are *all* spreads emits no
+    // table at all (the trailing group is empty and is dropped above), and then
+    // nothing else would. `<Component {props} />` written across lines is the
+    // ordinary way to forward props, and it was losing every line it spanned.
+    writer.to(element.span.end.saturating_sub(1));
 
     if uses_merge {
         writer.push(")");
@@ -212,8 +232,27 @@ fn emit_table(
     context: &EmitContext<'_>,
     writer: &mut Writer<'_>,
 ) -> Result<(), EmitError> {
+    // An empty table still has to span the lines the element did. An opening and
+    // closing tag on separate lines with nothing between them is an ordinary
+    // shape — a container waiting for its children — and emitting a bare `{}`
+    // where the opening tag stood silently shortens the file.
+    //
+    // Nothing about the output looks wrong afterwards, which is what makes it
+    // expensive. Every line below moves up, so no run of text lines up with the
+    // source, and a language server mapping luau-lsp's answers back onto the
+    // `.luaux` drops all of them: the markup keeps working while the Luau half
+    // of the file goes silent.
     if entries.is_empty() {
-        writer.push("{}");
+        let close = span.end.saturating_sub(1);
+
+        if writer.will_break(close) {
+            writer.push("{");
+            writer.to(close);
+            writer.push("}");
+        } else {
+            writer.push("{}");
+        }
+
         return Ok(());
     }
 

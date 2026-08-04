@@ -1226,6 +1226,20 @@ mod tests {
         "local Button = f()\nlocal e = (\n  <Button\n    OnClick={function()\n      count(count() + 1)\n    end}\n  />\n)\n",
         "local e = (\n  <Frame>\n    {cond and (\n      <TextLabel/>\n    ) or nil}\n  </Frame>\n)\n",
         "local e = (\n  <Frame\n    {props}\n    Name={n}\n  />\n)\n",
+        // Nothing between the tags. Every fixture above has an attribute or a
+        // child, so none of them reached the empty-table path — which is how it
+        // came to lose lines unnoticed.
+        "local e = (\n  <Frame>\n  </Frame>\n)\n",
+        "local e = (\n  <Frame>\n\n  </Frame>\n)\n",
+        "local e = (\n  <>\n  </>\n)\n",
+        "local e = (\n  <Frame>\n    <TextLabel>\n    </TextLabel>\n  </Frame>\n)\n",
+        // Nothing *but* spreads. These emit no table, so the closing brace that
+        // usually carries the emission down to the closing tag is never written
+        // — the fixture above with a `Name` beside its spread hides that, since
+        // the named attribute is enough to bring the table back.
+        "local e = (\n  <Frame\n    {props}\n  />\n)\n",
+        "local e = (\n  <Frame\n    {props}\n  >\n  </Frame>\n)\n",
+        "local e = (\n  <Frame\n    {props}\n    {props}\n  />\n)\n",
     ];
 
     /// The generated `.luau` must have the same number of lines as the `.luaux`
@@ -1242,6 +1256,65 @@ mod tests {
                 "line count changed\n--- in ---\n{fixture}\n--- out ---\n{compiled}"
             );
         }
+    }
+
+    /// An element with nothing in it is still as tall as it was written.
+    ///
+    /// The closing brace follows the closing tag on every other path; the empty
+    /// one used to emit `{}` and stop, which shortened the file by however many
+    /// lines the element spanned. That is invisible in the output — it is
+    /// correct Luau, just in the wrong place — and it costs the whole file its
+    /// luau-lsp answers, because a map built on matching line numbers then lines
+    /// nothing up.
+    #[test]
+    fn an_empty_element_spanning_lines_keeps_them() {
+        let source = "local e = (\n  <Frame>\n\n  </Frame>\n)\nreturn e\n";
+        let compiled = build(source);
+
+        assert_eq!(
+            compiled.lines().count(),
+            source.lines().count(),
+            "{compiled}"
+        );
+
+        // And the statement after it is still on its own line, which is the
+        // property that actually matters to a stack trace.
+        let lines: Vec<&str> = compiled.lines().collect();
+        assert!(lines[1].contains("create(\"Frame\")"), "{compiled}");
+        assert!(lines[5].contains("return e"), "{compiled}");
+    }
+
+    /// One line in, one line out: the fix must not start breaking tables that
+    /// were never multi-line to begin with.
+    #[test]
+    fn an_empty_element_on_one_line_stays_on_one_line() {
+        let compiled = build("local e = <Frame></Frame>\n");
+
+        assert_eq!(compiled.lines().count(), 1, "{compiled}");
+        assert!(compiled.contains("create(\"Frame\")({})"), "{compiled}");
+    }
+
+    /// A spread lands on its own line even when it is the first thing in the
+    /// element.
+    ///
+    /// Every group after the first is positioned before it is written; the first
+    /// was not, which a table survives — it positions its own entries — and a
+    /// spread does not. The spread came out on the opening tag's line and the
+    /// line it was written on came out blank, so hovering it asked luau-lsp
+    /// about an empty line.
+    #[test]
+    fn a_leading_spread_lands_on_its_source_line() {
+        let source = "local e = (\n  <Frame\n    {props}\n    Name={n}\n  />\n)\n";
+        let compiled = build(source);
+        let lines: Vec<&str> = compiled.lines().collect();
+
+        assert_eq!(
+            compiled.lines().count(),
+            source.lines().count(),
+            "{compiled}"
+        );
+        assert!(lines[2].contains("props"), "{compiled}");
+        assert!(lines[3].contains("Name = n"), "{compiled}");
     }
 
     #[test]
