@@ -18,4 +18,4 @@ strip = true
 [workspace.dependencies]
 # A path dependency also needs a version to be publishable: cargo strips
 # the path on publish and resolves the version from crates.io.
-luaux = { path = "crates/luaux", version = "0.1.0" }
+luaux = { path = "crates/luaux", version = "0.1.3-canary.1" }
