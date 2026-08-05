@@ -6,4 +6,4 @@ luaux = "luau-xml/luaux@0.1.2"
 pesde = "https://github.com/pesde-pkg/index"
 
 [dependencies]
-vide = { name = "centau/vide", version = "^", index = "pesde" }
+vide = { name = "alicesaidhi/vide", version = "^", index = "pesde" }
