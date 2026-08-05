@@ -249,7 +249,7 @@ clean = true                  # delete outputs whose source is gone
 create = "vide.create"        # default: bare `create`
 
 [elements]
-all = "flatcase "             # PascalCase | camelCase | snake_case | flatcase
+all = "flatcase"              # PascalCase | camelCase | snake_case | flatcase
 TextLabel = "text"            # an explicit entry always beats `all`
 
 [properties]

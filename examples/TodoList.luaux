@@ -5,7 +5,7 @@
 	only decides where your expressions land in the table Vide receives.
 ]]
 
-local Vide = require('@pkg/shared/vide')
+local Vide = require('@pkg/roblox/vide')
 local create, source, derive = Vide.create, Vide.source, Vide.derive
 local indexes, show = Vide.indexes, Vide.show
 

@@ -27,8 +27,9 @@ const FIXTURES: &str = "tests/runtime/fixtures";
 #[test]
 fn generated_code_behaves_under_vide() {
     // `compile_verified` re-parses with full_moon, whose recursive descent has
-    // large stack frames in debug builds — more than a test thread's 2 MB.
-    // Release and the CLI's main thread are both fine.
+    // large stack frames in debug builds — more than a test thread's 2 MB. The
+    // CLI runs on a larger stack for the same reason; see `STACK` in
+    // luaux-cli's main.rs.
     std::thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(run)
