@@ -190,12 +190,35 @@ jobs:
           sha256sum luaux-*.zip > SHA256SUMS
           cat SHA256SUMS
 
+      # Every release so far is titled "<version> (Month Nth, Year)". Left to
+      # the action the title is just the tag, so the convention held only as
+      # long as someone retyped it by hand on each release — and the one that
+      # was is the one nobody would notice was wrong.
+      - name: Release title
+        id: title
+        shell: bash
+        run: |
+          set -euo pipefail
+          day=$(date -u +%-d)
+          # 11th, 12th and 13th are the exceptions the last-digit rule gets
+          # wrong, so they are matched before it.
+          case "$day" in
+            11|12|13) suffix=th ;;
+            *1) suffix=st ;;
+            *2) suffix=nd ;;
+            *3) suffix=rd ;;
+            *)  suffix=th ;;
+          esac
+          version="${{ needs.verify.outputs.version }}"
+          echo "name=$version ($(date -u +%B) ${day}${suffix}, $(date -u +%Y))" >> "$GITHUB_OUTPUT"
+
       # Notes are generated from the pull requests merged since the previous
       # tag, so the release history is whatever the PR titles said. The release
       # is a draft, leaving room to edit before publishing.
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          name: ${{ steps.title.outputs.name }}
           draft: true
           generate_release_notes: true
           files: |
