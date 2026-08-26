@@ -81,11 +81,24 @@ jobs:
           fi
 
           work="$RUNNER_TEMP/smoke"
-          rm -rf "$work" && mkdir -p "$work"
-          printf 'local create = vide.create\nlocal a = <Frame Size={1} />\n' > "$work/S.luaux"
+          rm -rf "$work" && mkdir -p "$work/default" "$work/configured"
 
-          "$bin" build "$work"
-          grep -q 'create("Frame")' "$work/S.luau"
+          # No luaux.toml: the zero-config default, which is what a fresh
+          # install hits and the path most likely to be wrong after a change to
+          # what that default is.
+          printf 'local React = require("@pkg/react")\nlocal a = <Frame Size={1} />\n' \
+            > "$work/default/S.luaux"
+          "$bin" build "$work/default"
+          grep -q 'React.createElement("Frame"' "$work/default/S.luau"
+
+          # And a written [factory] block, which takes a different path through
+          # the config than no block at all — and where `backend` is required.
+          printf '[factory]\nbackend = "table"\ncreate = "vide.create"\n' \
+            > "$work/configured/luaux.toml"
+          printf 'local vide = require("@pkg/vide")\nlocal a = <Frame Size={1} />\n' \
+            > "$work/configured/S.luaux"
+          "$bin" build "$work/configured"
+          grep -q 'vide.create("Frame")' "$work/configured/S.luau"
 
       # Rokit matches release assets by the os and arch substrings in their
       # names, so this shape is load-bearing rather than cosmetic. It mirrors
@@ -140,11 +153,24 @@ jobs:
         run: |
           set -euo pipefail
           work="$RUNNER_TEMP/nix-smoke"
-          rm -rf "$work" && mkdir -p "$work"
-          printf 'local create = vide.create\nlocal a = <Frame Size={1} />\n' > "$work/S.luaux"
+          rm -rf "$work" && mkdir -p "$work/default" "$work/configured"
 
-          ./result/bin/luaux build "$work"
-          grep -q 'create("Frame")' "$work/S.luau"
+          # No luaux.toml: the zero-config default, which is what a fresh
+          # install hits and the path most likely to be wrong after a change to
+          # what that default is.
+          printf 'local React = require("@pkg/react")\nlocal a = <Frame Size={1} />\n' \
+            > "$work/default/S.luaux"
+          ./result/bin/luaux build "$work/default"
+          grep -q 'React.createElement("Frame"' "$work/default/S.luau"
+
+          # And a written [factory] block, which takes a different path through
+          # the config than no block at all — and where `backend` is required.
+          printf '[factory]\nbackend = "table"\ncreate = "vide.create"\n' \
+            > "$work/configured/luaux.toml"
+          printf 'local vide = require("@pkg/vide")\nlocal a = <Frame Size={1} />\n' \
+            > "$work/configured/S.luaux"
+          ./result/bin/luaux build "$work/configured"
+          grep -q 'vide.create("Frame")' "$work/configured/S.luau"
 
   release:
     name: publish release
