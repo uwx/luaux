@@ -1,20 +1,38 @@
 //! Code generation backends.
 //!
-//! The seam exists from the start deliberately (PLAN.md §5.6): Vide ships first,
-//! and the raw-`Instance.new` backend in DEFER.md plugs in here without
-//! disturbing the front end. Roughly 75–80% of the compiler — lexer, LuauX parser,
-//! alias resolution, validation, text rules — is target-independent and sits
-//! above this trait.
+//! A backend owns one thing: the **arrangement** of the constructor call — how
+//! many arguments it takes and where children sit among them. Everything that
+//! varies *inside* a props table is a `[factory]` variable instead, and the two
+//! seams are not interchangeable (backend-plan.md §2):
+//!
+//! > A factory variable changes what goes where inside one props table passed to
+//! > a curried constructor. Anything that changes the arity or arrangement of the
+//! > constructor call needs a backend.
+//!
+//! Two arrangements cover the Roblox UI libraries:
+//!
+//! * [`Table`] — `F(class)(props)`, children in the props table. Vide, Fusion.
+//! * [`Element`] — `F(class, props, children)`, children positional. React.
+//!
+//! The seam exists from the start deliberately (PLAN.md §5.6), and the
+//! raw-`Instance.new` backend in DEFER.md still cannot plug into it: it is
+//! statement-oriented, and [`Backend::emit`] requires an expression.
+//!
+//! Roughly 75–80% of the compiler — lexer, LuauX parser, alias resolution,
+//! validation, text rules — is target-independent and sits above this trait.
 
+pub mod common;
 pub mod context;
-pub mod vide;
+pub mod element;
+pub mod table;
 pub mod writer;
 
 use crate::markup::Node;
 use std::fmt;
 
 pub use context::{EmitContext, Helpers};
-pub use vide::Vide;
+pub use element::Element;
+pub use table::Table;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EmitError {

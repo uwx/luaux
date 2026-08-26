@@ -6,4 +6,5 @@ exclude = ["**/*.spec.luaux"]
 clean = true
 
 [factory]
+backend = "table"
 create = "create"

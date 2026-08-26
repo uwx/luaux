@@ -3,7 +3,7 @@ members = ["crates/luaux", "crates/luaux-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.3"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/luau-xml/luaux"
@@ -18,4 +18,10 @@ strip = true
 [workspace.dependencies]
 # A path dependency also needs a version to be publishable: cargo strips
 # the path on publish and resolves the version from crates.io.
-luaux = { path = "crates/luaux", version = "0.1.3-canary.1" }
+#
+# This has to be bumped with [workspace.package] version above — cargo cannot
+# interpolate one into the other. It was left at 0.1.3-canary.1 through the
+# 0.1.3 release, which built only because a release version satisfies a
+# prerelease requirement; across a minor bump it does not, and the workspace
+# stops resolving.
+luaux = { path = "crates/luaux", version = "0.2.0" }

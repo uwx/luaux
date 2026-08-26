@@ -7,9 +7,10 @@
 //!   use them. They are implementation details of a syntax feature, not
 //!   something an author asked for, so making them install a package would be
 //!   backwards.
-//! * **The element factory** — whatever `[factory] create` names, defaulting to
-//!   bare `create`. luaux only checks it is in scope; the author imports Vide in
-//!   whatever style their project uses.
+//! * **`[factory]` entries** — whatever `create`, `children`, `event`, and
+//!   `compute` name. luaux only checks that each one an emission actually
+//!   referenced is in scope; the author imports their library in whatever style
+//!   their project uses.
 //!
 //! That split is why luaux does not resolve module paths. A require is
 //! *location-dependent* — `script.Parent.Packages.vide` means something
@@ -87,17 +88,48 @@ pub fn inject(
     bound: &HashSet<String>,
     config: &Config,
 ) -> Result<String, CompileError> {
+    // Every `[factory]` entry the emission actually referenced has to name
+    // something the file can reach — and only those. A Vide project that never
+    // interpolates text should not be told to import a `compute` wrapper it
+    // does not use, which is the same rule the inlined helpers follow.
+    let mut referenced: Vec<(&str, &str)> = Vec::new();
+
     if helpers.create {
-        // Only the head of a name path can be a binding: for `vide.create` that
-        // is `vide`, and for the method form `scope:New` it is `scope`. Missing
-        // the colon reported `scope:New` itself as the name, so a file that
-        // bound `scope` was told to import something it cannot.
-        let root = config
-            .create
-            .split(['.', ':'])
-            .next()
-            .unwrap_or(&config.create)
-            .trim();
+        referenced.push(("create", &config.create));
+    }
+
+    if helpers.children {
+        if let Some(children) = &config.children {
+            referenced.push(("children", children));
+        }
+    }
+
+    if helpers.event {
+        if let Some(event) = &config.event {
+            referenced.push(("event", event.expression()));
+        }
+    }
+
+    if helpers.compute {
+        if let Some(compute) = &config.compute {
+            referenced.push(("compute", compute));
+        }
+    }
+
+    if helpers.fragment {
+        if let Some(fragment) = &config.fragment {
+            referenced.push(("fragment", fragment));
+        }
+    }
+
+    if helpers.merge {
+        if let Some(merge) = &config.merge {
+            referenced.push(("merge", merge));
+        }
+    }
+
+    for (setting, expression) in referenced {
+        let root = root_of(expression);
 
         if !bound.contains(root) {
             return Err(CompileError {
@@ -105,9 +137,8 @@ pub fn inject(
                 offset: 0,
                 length: 0,
                 help: Some(format!(
-                    "import it, or point [factory] create at something else \
-                     (currently `{}`)",
-                    config.create
+                    "import it, or point [factory] {setting} at something else \
+                     (currently `{expression}`)"
                 )),
             });
         }
@@ -134,6 +165,20 @@ pub fn inject(
         // Nothing but comments; there is no code to support anyway.
         None => output.to_string(),
     })
+}
+
+/// The binding a factory expression depends on.
+///
+/// Only the head of a name path can be one: for `vide.create` that is `vide`,
+/// for the method form `scope:New` it is `scope`, and for `React.Event` it is
+/// `React`. Splitting on `.` alone took `scope:New` for a single name, so a
+/// file that had imported Fusion was told to import `scope:New`.
+fn root_of(expression: &str) -> &str {
+    expression
+        .split(['.', ':'])
+        .next()
+        .unwrap_or(expression)
+        .trim()
 }
 
 /// Offset of the first non-trivia token.
@@ -211,6 +256,7 @@ mod tests {
             create: true,
             read: true,
             merge_props: true,
+            ..Default::default()
         }
     }
 
@@ -220,7 +266,7 @@ mod tests {
             "local x = 1",
             all(),
             &bound(&["create"]),
-            &Config::default(),
+            &Config::with_create("create"),
         )
         .expect("inject");
 
@@ -235,7 +281,13 @@ mod tests {
             read: true,
             ..Default::default()
         };
-        let out = inject("local x = 1", helpers, &bound(&[]), &Config::default()).expect("inject");
+        let out = inject(
+            "local x = 1",
+            helpers,
+            &bound(&[]),
+            &Config::with_create("create"),
+        )
+        .expect("inject");
 
         assert!(out.contains("__luaux_read"), "{out}");
         assert!(!out.contains("__luaux_merge"), "{out}");
@@ -247,7 +299,7 @@ mod tests {
             "local x = 1",
             all(),
             &bound(&["create", MERGE_HELPER]),
-            &Config::default(),
+            &Config::with_create("create"),
         )
         .expect("inject");
         assert!(!out.contains("local function __luaux_merge"), "{out}");
@@ -259,8 +311,13 @@ mod tests {
             create: true,
             ..Default::default()
         };
-        let error = inject("local x = 1", helpers, &bound(&[]), &Config::default())
-            .expect_err("should fail");
+        let error = inject(
+            "local x = 1",
+            helpers,
+            &bound(&[]),
+            &Config::with_create("create"),
+        )
+        .expect_err("should fail");
 
         assert!(
             error.message.contains("`create` is not in scope"),
@@ -311,15 +368,26 @@ mod tests {
     #[test]
     fn injects_nothing_when_no_helper_is_used() {
         let source = "local x = 1";
-        let out =
-            inject(source, Helpers::default(), &bound(&[]), &Config::default()).expect("inject");
+        let out = inject(
+            source,
+            Helpers::default(),
+            &bound(&[]),
+            &Config::with_create("create"),
+        )
+        .expect("inject");
         assert_eq!(out, source);
     }
 
     #[test]
     fn preserves_the_line_count() {
         let source = "--!strict\nlocal x = 1\nreturn x";
-        let out = inject(source, all(), &bound(&["create"]), &Config::default()).expect("inject");
+        let out = inject(
+            source,
+            all(),
+            &bound(&["create"]),
+            &Config::with_create("create"),
+        )
+        .expect("inject");
         assert_eq!(out.lines().count(), source.lines().count(), "{out}");
     }
 
@@ -327,7 +395,13 @@ mod tests {
     fn goes_after_leading_directives_and_comments() {
         // `--!strict` must stay first, or strict mode silently turns off.
         let source = "--!strict\n-- a note\n\nlocal x = 1";
-        let out = inject(source, all(), &bound(&["create"]), &Config::default()).expect("inject");
+        let out = inject(
+            source,
+            all(),
+            &bound(&["create"]),
+            &Config::with_create("create"),
+        )
+        .expect("inject");
 
         let lines: Vec<&str> = out.lines().collect();
         assert_eq!(lines[0], "--!strict");
@@ -338,7 +412,152 @@ mod tests {
     #[test]
     fn leaves_a_comment_only_file_alone() {
         let source = "-- nothing here\n";
-        let out = inject(source, all(), &bound(&["create"]), &Config::default()).expect("inject");
+        let out = inject(
+            source,
+            all(),
+            &bound(&["create"]),
+            &Config::with_create("create"),
+        )
+        .expect("inject");
         assert_eq!(out, source);
+    }
+
+    /// The in-scope check across every `[factory]` entry, not just `create`.
+    mod factory {
+        use super::*;
+
+        fn fusion() -> Config {
+            Config::parse(
+                "[factory]\n\
+                 backend = \"table\"\n\
+                 create = \"scope:New\"\n\
+                 children = \"Children\"\n\
+                 event = \"OnEvent\"\n\
+                 compute = \"scope:Computed\"\n",
+            )
+            .expect("config")
+        }
+
+        fn referencing(children: bool, event: bool, compute: bool) -> Helpers {
+            Helpers {
+                create: true,
+                children,
+                event,
+                compute,
+                ..Default::default()
+            }
+        }
+
+        #[test]
+        fn each_referenced_entry_has_to_be_bound() {
+            for (helpers, missing) in [
+                (referencing(true, false, false), "Children"),
+                (referencing(false, true, false), "OnEvent"),
+            ] {
+                let error = inject("local x = 1", helpers, &bound(&["scope"]), &fusion())
+                    .expect_err("should fail");
+
+                assert!(
+                    error
+                        .message
+                        .contains(&format!("`{missing}` is not in scope")),
+                    "{error:?}"
+                );
+            }
+        }
+
+        /// The diagnostic has to name the setting that wanted the binding.
+        /// "`Children` is not in scope" alone sends someone looking for a
+        /// module; the help line is what points at their own config.
+        #[test]
+        fn the_diagnostic_names_the_setting() {
+            let error = inject(
+                "local x = 1",
+                referencing(true, false, false),
+                &bound(&["scope"]),
+                &fusion(),
+            )
+            .expect_err("should fail");
+
+            let help = error.help.expect("help");
+            assert!(help.contains("[factory] children"), "{help}");
+            assert!(help.contains("`Children`"), "{help}");
+        }
+
+        /// Same rule the inlined helpers follow: only what a file actually
+        /// referenced is demanded. A Vide-shaped module with no spreads should
+        /// not gain a merge helper, and a Fusion one that never interpolates
+        /// text should not be told to import a wrapper it does not use.
+        #[test]
+        fn an_unreferenced_entry_is_not_demanded() {
+            inject(
+                "local x = 1",
+                referencing(false, false, false),
+                &bound(&["scope"]),
+                &fusion(),
+            )
+            .expect("nothing but create was referenced");
+        }
+
+        /// `scope:New` and `scope:Computed` share a root, so one binding
+        /// satisfies both — the check is about reachability, not about how many
+        /// settings happen to name the same object.
+        #[test]
+        fn one_binding_can_satisfy_several_settings() {
+            inject(
+                "local x = 1",
+                referencing(false, false, true),
+                &bound(&["scope"]),
+                &fusion(),
+            )
+            .expect("scope covers create and compute");
+        }
+
+        /// React reaches three settings through one import. A project that
+        /// destructures `createElement` instead has to bind the others too, and
+        /// the error should say which one it is short of.
+        #[test]
+        fn a_dotted_library_is_reached_through_its_root() {
+            let react = Config::parse(
+                "[factory]\nbackend = \"table\"\ncreate = \"React.createElement\"\nevent = \"React.Event.\"\n",
+            )
+            .expect("config");
+
+            inject(
+                "local x = 1",
+                referencing(false, true, false),
+                &bound(&["React"]),
+                &react,
+            )
+            .expect("one React binding covers create and event");
+
+            let error = inject(
+                "local x = 1",
+                referencing(false, true, false),
+                &bound(&["createElement"]),
+                &react,
+            )
+            .expect_err("should fail");
+
+            assert!(
+                error.message.contains("`React` is not in scope"),
+                "{error:?}"
+            );
+        }
+
+        /// Setting `compute` removes a dependency rather than adding one: the
+        /// reader comes from the callback, so nothing is inlined.
+        #[test]
+        fn compute_does_not_inline_the_read_helper() {
+            let out = inject(
+                "local x = 1",
+                referencing(false, false, true),
+                &bound(&["scope"]),
+                &fusion(),
+            )
+            .expect("inject");
+
+            assert!(!out.contains("__luaux_read"), "{out}");
+        }
     }
 }

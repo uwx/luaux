@@ -1,0 +1,59 @@
+--!nocheck
+local React = require("@pkg/@jsdotlua/react")
+local ReactRoblox = require("@pkg/@jsdotlua/react-roblox")
+
+return function(check)
+	-- The question backend-plan.md §12.1 asks, answered here rather than by
+	-- reading the reconciler. A nil child leaves a hole in the children table,
+	-- and `reconcileChildrenArray` walks it with `for i = 1, #newChildren` —
+	-- so if `#` returned a short border, every sibling after the hole would
+	-- silently never render.
+	--
+	-- It does not: a table constructor presizes its array part, so the width is
+	-- the number of expressions written. This fixture is what proves it, and
+	-- what would catch it if React ever changed.
+	local function tree(showMiddle)
+		return (
+			<Frame Name="Root">
+				<TextLabel Name="before" />
+				{showMiddle and (<TextLabel Name="middle" />) or nil}
+				<TextLabel Name="after" />
+			</Frame>
+		)
+	end
+
+	local container = Instance.new("Folder")
+	local root = ReactRoblox.createLegacyRoot(container)
+
+	root:render(tree(false))
+
+	local frame = container:GetChildren()[1]
+	local names = {}
+	for _, child in frame:GetChildren() do
+		table.insert(names, child.Name)
+	end
+	table.sort(names)
+
+	check("nil child renders nothing", #names == 2)
+	check("sibling after a hole survives", names[1] == "after" and names[2] == "before")
+
+	-- The reason LuauX does *not* compact the list. Compacting would move
+	-- `after` from index 3 to index 2 when the middle is hidden, and React keys
+	-- children by index — so the surviving sibling would be torn down and
+	-- rebuilt rather than kept.
+	local before = {}
+	for _, child in frame:GetChildren() do
+		before[child.Name] = child
+	end
+
+	root:render(tree(true))
+
+	local shown = {}
+	for _, child in frame:GetChildren() do
+		shown[child.Name] = child
+	end
+
+	check("middle appears when shown", shown.middle ~= nil)
+	check("sibling identity survives the toggle", before.after == shown.after)
+	check("first child identity survives too", before.before == shown.before)
+end

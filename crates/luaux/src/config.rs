@@ -69,7 +69,34 @@ struct RawBuild {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawFactory {
+    backend: Option<String>,
     create: Option<String>,
+    children: Option<String>,
+    event: Option<String>,
+    compute: Option<String>,
+    #[serde(rename = "use")]
+    use_fn: Option<String>,
+    fragment: Option<String>,
+    interpolate: Option<String>,
+    merge: Option<String>,
+}
+
+impl RawFactory {
+    /// Whether the project wrote a `[factory]` block with anything in it.
+    ///
+    /// The dividing line for defaults: with no block, luaux picks a library.
+    /// With one, it assumes nothing — see [`Config::default`].
+    fn is_set(&self) -> bool {
+        self.backend.is_some()
+            || self.create.is_some()
+            || self.children.is_some()
+            || self.event.is_some()
+            || self.compute.is_some()
+            || self.use_fn.is_some()
+            || self.fragment.is_some()
+            || self.interpolate.is_some()
+            || self.merge.is_some()
+    }
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -237,19 +264,181 @@ pub struct Config {
     pub build: Build,
     /// Expression called to construct an element — TypeScript's `jsxFactory`.
     ///
-    /// Naming, not shape: whatever this points at must still match Vide's
-    /// `create(class)(propsAndChildren)` contract. A different *shape* needs a
-    /// backend, not a name.
+    /// Naming, not shape: whatever this points at must still match the
+    /// arrangement the selected backend emits. A different *arrangement* —
+    /// children in a third argument, say — needs a backend, not a name
+    /// (backend-plan.md §2).
     ///
     /// Trimmed and checked to lower to Luau when it came from
     /// [`Config::parse`]. [`Config::with_create`] does neither, so a caller
     /// building a config by hand owns that.
     pub create: String,
+    /// `[factory] children` — the table key an element's children go under.
+    ///
+    /// Unset, children are numeric entries in the props table, which is Vide's
+    /// convention. Set, they become one `[E] = { … }` entry, which is Fusion's.
+    ///
+    /// Deliberately a *key expression* and not a general placement mechanism:
+    /// a sentinel that moved children out of the table entirely would change the
+    /// call's arrangement, and that is a backend's job (backend-plan.md §5.5).
+    pub children: Option<String>,
+    /// `[factory] event` — how an event name becomes a table key.
+    ///
+    /// Unset, an event is an ordinary string key. Set, it is wrapped — called
+    /// for Fusion's `OnEvent`, indexed for React's `React.Event`.
+    ///
+    /// Applies only to intrinsics, because that is the only place LuauX knows
+    /// an attribute *is* an event. A component's props are arbitrary.
+    pub event: Option<EventKey>,
+    /// `[factory] compute` — the wrapper for interpolated text.
+    ///
+    /// Unset, interpolated text is a thunk reading each hole through the inlined
+    /// `__luaux_read`. Set, it is `E(function(use) return … end)` and no helper
+    /// is inlined — the reader comes from the callback.
+    pub compute: Option<String>,
+    /// `[factory] use` — the reader's name inside `compute`.
+    ///
+    /// Resolved to `use` when `compute` is set, and `None` otherwise, so an
+    /// emission never has to ask whether the name is meaningful.
+    pub use_fn: Option<String>,
+    /// `[factory] backend` — which constructor arrangement to emit.
+    pub backend: BackendKind,
+    /// `[factory] fragment` — the component a fragment is constructed with.
+    ///
+    /// Unset, a fragment is a plain table, which is what a one-table library
+    /// recurses. Required by the element backend, where a bare table is not an
+    /// element and there is nothing sensible to guess.
+    pub fragment: Option<String>,
+    /// `[factory] interpolate` — how interpolated text is encoded.
+    pub interpolate: Interpolate,
+    /// `[factory] merge` — how spread groups combine.
+    ///
+    /// Unset, the inlined `__luaux_merge`: string keys last-wins so source order
+    /// decides precedence, numeric keys concatenate. Set, that expression is
+    /// called instead and nothing is inlined.
+    ///
+    /// Exists because `children` changes what the default helper means — under a
+    /// children key the numeric branch no longer sees children, and a spread
+    /// carrying its own children collides last-wins rather than concatenating.
+    /// That is defensible and not obviously right, so there is somewhere to say
+    /// otherwise (factory-plan.md §3.5).
+    pub merge: Option<String>,
 }
 
-/// Bare `create`, matching the common `local create = vide.create`. Projects
-/// that keep Vide in one binding set `create = "vide.create"`.
-pub const DEFAULT_CREATE: &str = "create";
+/// Which constructor arrangement a backend emits (backend-plan.md §2).
+///
+/// Named for the shape rather than the library, for the same reason the backend
+/// itself is: a value named `react` would make every library without a value of
+/// its own second-class, which is the argument against a `preset` key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackendKind {
+    /// `F(class)(props)` — one curried constructor, children in the props
+    /// table. Vide and Fusion.
+    #[default]
+    Table,
+    /// `F(class, props, children)` — children in a third positional argument.
+    /// React.
+    Element,
+}
+
+impl BackendKind {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "table" => Some(Self::Table),
+            "element" => Some(Self::Element),
+            _ => None,
+        }
+    }
+}
+
+/// How interpolated text is encoded.
+///
+/// Its own key rather than something the backend implies, because the two are
+/// independent: a one-table library with no reactivity would want `plain` too,
+/// and nothing about an arrangement says anything about strings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Interpolate {
+    /// Wrapped so the library re-runs it when a hole changes — a thunk by
+    /// default, or `[factory] compute` when set.
+    #[default]
+    Wrap,
+    /// A plain interpolated string, with each hole emitted bare. For a library
+    /// with no per-prop reactivity, where a hole is already a value.
+    Plain,
+}
+
+impl Interpolate {
+    fn parse(text: &str) -> Option<Self> {
+        match text {
+            "wrap" => Some(Self::Wrap),
+            "plain" => Some(Self::Plain),
+            _ => None,
+        }
+    }
+}
+
+/// How an event name is spelled as a table key.
+///
+/// Two forms, because the libraries disagree and the difference is not
+/// cosmetic: Fusion's `OnEvent` is *called* with the name, React's
+/// `React.Event` is *indexed* by it (backend-plan.md §5.3).
+///
+/// Spelled in `luaux.toml` by whether the value ends in a dot:
+///
+/// ```toml
+/// event = "OnEvent"        # [OnEvent("Activated")]
+/// event = "React.Event."   # [React.Event.Activated]
+/// ```
+///
+/// A trailing dot is how the index form is already written in Luau, so nothing
+/// is invented — the alternative was a second key, or a `%s` placeholder inside
+/// a string meant to hold an expression.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EventKey {
+    /// `[E("Activated")]`
+    Call(String),
+    /// `[E.Activated]`
+    Index(String),
+}
+
+impl EventKey {
+    /// Reads the `luaux.toml` spelling. A trailing `.` selects the index form.
+    fn parse(value: &str) -> Self {
+        match value.strip_suffix('.') {
+            Some(expression) => Self::Index(expression.trim_end().to_string()),
+            None => Self::Call(value.to_string()),
+        }
+    }
+
+    /// The bracketed table key for one canonical event name.
+    pub fn key(&self, event: &str) -> String {
+        match self {
+            Self::Call(expression) => format!("[{expression}(\"{event}\")]"),
+            Self::Index(expression) => format!("[{expression}.{event}]"),
+        }
+    }
+
+    /// The expression itself, for the in-scope check in [`crate::imports`].
+    pub fn expression(&self) -> &str {
+        match self {
+            Self::Call(expression) | Self::Index(expression) => expression,
+        }
+    }
+}
+
+/// The zero-config element factory.
+///
+/// React, because JSX is React's syntax and a `.luaux` that lowers to it needs
+/// no explanation. A project using anything else writes a `[factory]` block, and
+/// the moment it does, nothing is assumed — see [`Config::default`].
+pub const DEFAULT_CREATE: &str = "React.createElement";
+
+/// The factory for the one-table arrangement, matching the common
+/// `local create = vide.create`.
+pub const BARE_CREATE: &str = "create";
+
+/// The reader's name inside a `compute` callback, matching Fusion's own docs.
+pub const DEFAULT_USE: &str = "use";
 
 /// Which files a build considers, and where they go.
 #[derive(Debug, Clone)]
@@ -277,6 +466,41 @@ impl Default for Build {
     }
 }
 
+/// The mode defaults an arrangement implies.
+///
+/// Split from the *name* defaults deliberately. Writing `[factory]` turns off
+/// every assumption about names — that is the rule that stops a Vide project
+/// inheriting React's `create`. It cannot turn off what the arrangement itself
+/// decides: an element-shaped library has no per-prop reactivity, so interpolated
+/// text has nothing to wrap, and its component body re-runs, so a conditional
+/// child built once is ordinary rather than a mistake. Both follow from
+/// `backend`, which the project *did* name.
+///
+/// One function because its two callers diverged once already. The lint was
+/// defaulted off in the parsed path only, so a project with no `luaux.toml` at
+/// all — the arrangement the React default exists to serve — got React *and* a
+/// warning telling it to wrap a conditional child in a function, which is advice
+/// that makes React render the function.
+const fn arrangement_defaults(backend: BackendKind) -> (Interpolate, LintLevel) {
+    match backend {
+        BackendKind::Element => (Interpolate::Plain, LintLevel::Off),
+        BackendKind::Table => (Interpolate::Wrap, LintLevel::Warn),
+    }
+}
+
+/// The zero-config default: React.
+///
+/// This is the *only* place luaux names a library, and it applies only when a
+/// project has written no `[factory]` block at all. Writing one turns every
+/// assumption off and makes `backend` required, because the alternative is the
+/// failure mode this compiler avoids everywhere else: a Vide project that set
+/// only `create` would inherit React's arrangement, pass the in-scope check
+/// because its own name really is in scope, and emit the wrong shape in
+/// silence.
+///
+/// That is a correction to backend-plan.md §6, which argued the in-scope check
+/// made a flipped default safe on its own. It makes a *wrong name* loud. It says
+/// nothing about a right name in the wrong arrangement.
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -286,9 +510,17 @@ impl Default for Config {
             class_properties: HashMap::new(),
             element_casing: Casing::default(),
             property_casing: Casing::default(),
-            static_conditional_child: LintLevel::default(),
+            static_conditional_child: arrangement_defaults(BackendKind::Element).1,
             build: Build::default(),
             create: DEFAULT_CREATE.to_string(),
+            children: None,
+            event: Some(EventKey::Index("React.Event".to_string())),
+            compute: None,
+            use_fn: None,
+            backend: BackendKind::Element,
+            fragment: Some("React.Fragment".to_string()),
+            interpolate: arrangement_defaults(BackendKind::Element).0,
+            merge: None,
         }
     }
 }
@@ -315,6 +547,33 @@ impl Config {
     pub fn with_create(create: impl Into<String>) -> Self {
         Self {
             create: create.into(),
+            ..Self::bare()
+        }
+    }
+
+    /// The one-table arrangement with nothing assumed.
+    ///
+    /// What a project gets the moment it writes a `[factory]` block: bare
+    /// `create`, no children key, no event wrapper, no fragment, wrapped text.
+    /// Every difference from here is something the project asked for.
+    pub fn bare() -> Self {
+        let (interpolate, static_conditional_child) = arrangement_defaults(BackendKind::Table);
+
+        Self {
+            create: BARE_CREATE.to_string(),
+            children: None,
+            event: None,
+            compute: None,
+            use_fn: None,
+            backend: BackendKind::Table,
+            fragment: None,
+            merge: None,
+            // Both derived rather than restated, because `..Self::default()`
+            // below inherits from the *React* config: every field this one does
+            // not name explicitly is a React value in a table-shaped config, and
+            // the lint level reached here that way.
+            interpolate,
+            static_conditional_child,
             ..Self::default()
         }
     }
@@ -355,7 +614,13 @@ impl Config {
             message: format!("luaux.toml: {}", error.message()),
         })?;
 
-        let mut config = Config::default();
+        // With no `[factory]` block luaux picks a library; with one it assumes
+        // nothing. Everything below then *adds* to whichever base that is.
+        let configured = raw.factory.is_set();
+        let mut config = match configured {
+            true => Config::bare(),
+            false => Config::default(),
+        };
 
         if let Some(level) = &raw.lints.static_conditional_child {
             config.static_conditional_child =
@@ -367,7 +632,7 @@ impl Config {
                 })?;
         }
 
-        let warnings = Vec::new();
+        let mut warnings = Vec::new();
 
         config.build.input = raw.build.input.map(PathBuf::from);
         config.build.output = raw.build.output.map(PathBuf::from);
@@ -379,17 +644,188 @@ impl Config {
         }
         config.build.clean = raw.build.clean.unwrap_or(false);
 
-        if let Some(create) = raw.factory.create {
-            let create = create.trim();
+        // Required once anything else in the block is set, so an arrangement is
+        // never inherited by accident. One loud line to add beats output that
+        // compiles and is wrong.
+        if configured && raw.factory.backend.is_none() {
+            return Err(ConfigError {
+                message: "luaux.toml: [factory] needs a backend: \"table\" for Vide, Fluid or Fusion, \"element\" for React"
+                    .to_string(),
+            });
+        }
 
-            if create.is_empty() {
+        if let Some(backend) = &raw.factory.backend {
+            config.backend = BackendKind::parse(backend.trim()).ok_or_else(|| ConfigError {
+                message: format!(
+                    "luaux.toml: [factory] backend = \"{backend}\" is not one of table, element"
+                ),
+            })?;
+        }
+
+        // Modes follow the arrangement; names do not. Applied here rather than
+        // in the defaults so an explicitly named backend gets the modes that
+        // belong to it, and applied before the explicit keys below so either can
+        // still override.
+        let (interpolate, lint) = arrangement_defaults(config.backend);
+        config.interpolate = interpolate;
+        if raw.lints.static_conditional_child.is_none() {
+            config.static_conditional_child = lint;
+        }
+
+        if let Some(interpolate) = &raw.factory.interpolate {
+            config.interpolate =
+                Interpolate::parse(interpolate.trim()).ok_or_else(|| ConfigError {
+                    message: format!(
+                        "luaux.toml: [factory] interpolate = \"{interpolate}\" is not one of \
+                         wrap, plain"
+                    ),
+                })?;
+        }
+
+        if let Some(create) = raw.factory.create {
+            let create = factory_value("create", &create)?;
+            validate_create(create)?;
+            config.create = create.to_string();
+        }
+
+        if let Some(merge) = raw.factory.merge {
+            let merge = factory_value("merge", &merge)?;
+            validate_factory("merge", merge, &format!("local _ = {merge}({{}}, {{}})"))?;
+            config.merge = Some(merge.to_string());
+        }
+
+        if let Some(fragment) = raw.factory.fragment {
+            let fragment = factory_value("fragment", &fragment)?;
+            // Emitted as the constructor's first argument, so that is the shape
+            // it is checked in.
+            validate_factory(
+                "fragment",
+                fragment,
+                &format!("local _ = f({fragment}, nil, {{}})"),
+            )?;
+            config.fragment = Some(fragment.to_string());
+        }
+
+        if let Some(children) = raw.factory.children {
+            let children = factory_value("children", &children)?;
+            // Emitted as a table key, so that is the shape it is checked in.
+            validate_factory(
+                "children",
+                children,
+                &format!("local _ = {{ [{children}] = {{}} }}"),
+            )?;
+            config.children = Some(children.to_string());
+        }
+
+        if let Some(event) = raw.factory.event {
+            let event = factory_value("event", &event)?;
+            let key = EventKey::parse(event);
+
+            // A bare `.` leaves nothing to index, and `EventKey::parse` would
+            // hand back an empty expression that probes as `[.X]`.
+            if key.expression().is_empty() {
                 return Err(ConfigError {
-                    message: "luaux.toml: [factory] create cannot be empty".to_string(),
+                    message: format!(
+                        "luaux.toml: [factory] event = \"{event}\" has a `.` with no name beside it"
+                    ),
                 });
             }
 
-            validate_create(create)?;
-            config.create = create.to_string();
+            validate_factory(
+                "event",
+                event,
+                &format!("local _ = {{ {} = f }}", key.key("X")),
+            )?;
+            config.event = Some(key);
+        }
+
+        if let Some(compute) = raw.factory.compute {
+            let compute = factory_value("compute", &compute)?;
+            validate_factory(
+                "compute",
+                compute,
+                &format!("local _ = {compute}(function(use) return \"\" end)"),
+            )?;
+            config.compute = Some(compute.to_string());
+        }
+
+        // Checked even when it turns out to be inert: a malformed value is worth
+        // reporting whether or not anything reads it, and staying silent would
+        // make the key look accepted right up until `compute` is added.
+        let use_fn = match &raw.factory.use_fn {
+            Some(value) => {
+                let value = factory_value("use", value)?;
+                validate_use(value)?;
+                Some(value.to_string())
+            }
+            None => None,
+        };
+
+        // `use` names the reader inside `compute`'s callback, so it means
+        // nothing without one. Resolved here rather than at emission, so the
+        // backend never has to ask whether the name is meaningful — it is
+        // `Some` exactly when `compute` is.
+        config.use_fn = match (config.compute.is_some(), use_fn) {
+            (true, Some(name)) => Some(name),
+            (true, None) => Some(DEFAULT_USE.to_string()),
+            (false, Some(name)) => {
+                warnings.push(format!(
+                    "luaux.toml: [factory] use = \"{name}\" does nothing without [factory] \
+                     compute, whose callback is what it names the reader of"
+                ));
+                None
+            }
+            (false, None) => None,
+        };
+
+        // Cross-key rules. A key that is meaningless under the selected backend
+        // is rejected rather than ignored: a config that silently does nothing
+        // is the hardest kind to debug, because the output looks deliberate.
+        if config.backend == BackendKind::Element {
+            if config.fragment.is_none() {
+                return Err(ConfigError {
+                    message: "luaux.toml: [factory] backend = \"element\" needs a fragment"
+                        .to_string(),
+                });
+            }
+
+            // `children` is a *table key*, and the element backend has no table
+            // to put it in — children are a positional argument there. A
+            // sentinel that moved them would change the call's arrangement,
+            // which is a backend's job, not a key's (backend-plan.md §5.5).
+            if config.children.is_some() {
+                return Err(ConfigError {
+                    message: "luaux.toml: [factory] children is a table key, and the element \
+                              backend passes children as an argument instead"
+                        .to_string(),
+                });
+            }
+        }
+
+        // A fragment is a plain table under this arrangement, and the key is
+        // never read — so a project that set it would get a fragment built the
+        // way it always was, from a config naming something else. Rejected for
+        // the same reason `children` is rejected the other way round.
+        if config.backend == BackendKind::Table && config.fragment.is_some() {
+            return Err(ConfigError {
+                message: "luaux.toml: [factory] fragment is only read by the element backend; a fragment is a plain table under this one".to_string(),
+            });
+        }
+
+        // `compute` names the wrapper for interpolated text, and `plain` says
+        // there is no wrapper. Together they are a contradiction, and the
+        // emission resolved it by dropping the wrapper — so a project that set
+        // both got text that silently never updated, from a config that named
+        // the thing meant to update it.
+        //
+        // This is the one place two `[factory]` keys steer the same decision,
+        // which is why it is the one place they can contradict each other.
+        if config.interpolate == Interpolate::Plain && config.compute.is_some() {
+            return Err(ConfigError {
+                message: "luaux.toml: [factory] interpolate = \"plain\" leaves nothing for \
+                          compute to wrap — drop one of them"
+                    .to_string(),
+            });
         }
 
         // `all` is reserved in both tables. No Roblox class or member is named
@@ -604,6 +1040,118 @@ impl Config {
     }
 }
 
+/// Trims a `[factory]` value and rejects an empty one.
+///
+/// Every key in the table names a Luau expression, and an empty string names
+/// nothing. Caught by key so the message says which setting is blank rather
+/// than failing later as a parse error on `local _ = { [] = {} }`.
+fn factory_value<'a>(key: &str, value: &'a str) -> Result<&'a str, ConfigError> {
+    let value = value.trim();
+
+    if value.is_empty() {
+        return Err(ConfigError {
+            message: format!("luaux.toml: [factory] {key} cannot be empty"),
+        });
+    }
+
+    // `--` opens a Luau comment, and every key is checked by parsing a probe
+    // built around its value. A value ending in `) --` closes the probe's own
+    // parenthesis and comments away the rest of it, so the probe parses and the
+    // value reaches emission anyway — surfacing as luaux's "this is a luaux bug,
+    // please report it", which is the one thing that check exists to prevent.
+    if value.contains("--") {
+        return Err(ConfigError {
+            message: format!("luaux.toml: [factory] {key} cannot contain a comment"),
+        });
+    }
+
+    // A newline survives trimming and would be emitted verbatim, shifting every
+    // line below it and silently costing the file its line-for-line mapping.
+    if value.contains(['\n', '\r']) {
+        return Err(ConfigError {
+            message: format!("luaux.toml: [factory] {key} has to be one line"),
+        });
+    }
+
+    Ok(value)
+}
+
+/// Rejects a `[factory]` value that will not lower to Luau, checked in the
+/// shape it is *emitted* into.
+///
+/// The shapes are not interchangeable, which is why each caller supplies its
+/// own probe rather than this asking "is it an expression?". `scope:New` is a
+/// legal factory and not a legal expression on its own; `React.Event.` is a
+/// legal event key and not a legal anything on its own.
+///
+/// Same reasoning as [`validate_create`]: without this, a typo in `luaux.toml`
+/// surfaces from [`crate::compile_verified`] as luaux's own "please report it"
+/// internal error, which sends someone to the issue tracker over their config.
+fn validate_factory(key: &str, value: &str, probe: &str) -> Result<(), ConfigError> {
+    // `..` is Luau's concatenation operator, so `React..Event` *parses* — as a
+    // string, which is not a table key anyone meant. Caught by name first, for
+    // the same reason `create` catches it.
+    if value.contains("..") {
+        return Err(ConfigError {
+            message: format!(
+                "luaux.toml: [factory] {key} = \"{value}\" has a `.` with no name beside it"
+            ),
+        });
+    }
+
+    if full_moon::parse_fallible(probe, full_moon::LuaVersion::luau())
+        .into_result()
+        .is_err()
+    {
+        return Err(ConfigError {
+            message: format!(
+                "luaux.toml: [factory] {key} = \"{value}\" is not something luaux can emit; \
+                 it lowers to `{}`",
+                probe.trim_start_matches("local _ = ")
+            ),
+        });
+    }
+
+    Ok(())
+}
+
+/// Rejects a `[factory] use` that is not a plain identifier.
+///
+/// It is a *binding* — the parameter of the `compute` callback — not an
+/// expression, so a dotted or called value cannot work. A keyword parses as a
+/// keyword and would silently change what the callback means.
+fn validate_use(name: &str) -> Result<(), ConfigError> {
+    const KEYWORDS: &[&str] = &[
+        "and", "break", "do", "else", "elseif", "end", "false", "for", "function", "if", "in",
+        "local", "nil", "not", "or", "repeat", "return", "then", "true", "until", "while",
+    ];
+
+    let reject = |reason: &str| {
+        Err(ConfigError {
+            message: format!(
+                "luaux.toml: [factory] use = \"{name}\" {reason}; it names the reader inside \
+                 the compute callback, so it has to be a plain identifier"
+            ),
+        })
+    };
+
+    let mut characters = name.chars();
+    let valid = characters
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == '_')
+        && characters.all(|character| character.is_ascii_alphanumeric() || character == '_');
+
+    if !valid {
+        return reject("is not an identifier");
+    }
+
+    if KEYWORDS.contains(&name) {
+        return reject("is a Luau keyword");
+    }
+
+    Ok(())
+}
+
 /// Rejects a `[factory] create` that will not lower to Luau.
 ///
 /// Checked in the shape it is *emitted* into — `create("Frame")({})` — rather
@@ -615,7 +1163,7 @@ impl Config {
 ///
 /// Checked here because the alternative is not a wrong error but a misdirected
 /// one. A factory that does not lower to Luau reaches the backend, emits, and
-/// comes back out of [`crate::compile_verified`] as *"internal error: the vide
+/// comes back out of [`crate::compile_verified`] as *"internal error: the table
 /// backend emitted invalid Luau — this is a luaux bug; please report it"*,
 /// which sends someone to the issue tracker over a typo in their own config.
 ///
@@ -694,7 +1242,12 @@ mod tests {
 
     #[test]
     fn lints_default_to_warn_and_are_configurable() {
-        assert_eq!(parse("").static_conditional_child, LintLevel::Warn);
+        // The zero-config default is React, where the lint's premise is false
+        // and it defaults off. Under the one-table arrangement it warns.
+        assert_eq!(
+            parse("[factory]\nbackend = \"table\"\n").static_conditional_child,
+            LintLevel::Warn
+        );
         assert_eq!(
             parse("[lints]\nstatic_conditional_child = \"off\"\n").static_conditional_child,
             LintLevel::Off
@@ -715,15 +1268,19 @@ mod tests {
     fn the_element_factory_defaults_to_bare_create() {
         assert_eq!(parse("").create, DEFAULT_CREATE);
         assert_eq!(
-            parse("[factory]\ncreate = \"vide.create\"\n").create,
+            parse("[factory]\nbackend = \"table\"\ncreate = \"vide.create\"\n").create,
             "vide.create"
         );
     }
 
     #[test]
     fn rejects_an_empty_factory() {
-        assert!(parse_err("[factory]\ncreate = \"\"\n").contains("cannot be empty"));
-        assert!(parse_err("[factory]\ncreate = \"   \"\n").contains("cannot be empty"));
+        assert!(parse_err("[factory]\nbackend = \"table\"\ncreate = \"\"\n")
+            .contains("cannot be empty"));
+        assert!(
+            parse_err("[factory]\nbackend = \"table\"\ncreate = \"   \"\n")
+                .contains("cannot be empty")
+        );
     }
 
     /// Anything that lowers to a call is accepted, not only a dotted name. The
@@ -740,7 +1297,9 @@ mod tests {
             "vide.create()",
             "ui.factories[1]",
         ] {
-            let config = parse(&format!("[factory]\ncreate = \"{create}\"\n"));
+            let config = parse(&format!(
+                "[factory]\nbackend = \"table\"\ncreate = \"{create}\"\n"
+            ));
             assert_eq!(config.create, create);
 
             // Acceptance has to mean the emitted call parses, not merely that
@@ -777,7 +1336,9 @@ mod tests {
             ("end", "not something luaux can call"),
             ("a.end", "not something luaux can call"),
         ] {
-            let error = parse_err(&format!("[factory]\ncreate = \"{create}\"\n"));
+            let error = parse_err(&format!(
+                "[factory]\nbackend = \"table\"\ncreate = \"{create}\"\n"
+            ));
             assert!(error.contains("[factory] create"), "{create}: {error}");
             // The reason, not just the fixed wrapper `reject` puts around every
             // one — otherwise a single blanket message would satisfy the lot.
@@ -792,7 +1353,7 @@ mod tests {
     #[test]
     fn a_factory_that_lowers_but_names_nothing_is_left_to_the_scope_check() {
         assert_eq!(
-            parse("[factory]\ncreate = \"(vide.create)\"\n").create,
+            parse("[factory]\nbackend = \"table\"\ncreate = \"(vide.create)\"\n").create,
             "(vide.create)"
         );
     }
@@ -802,7 +1363,7 @@ mod tests {
         // Otherwise the stray bytes reach both the in-scope check and the
         // emitted call.
         assert_eq!(
-            parse("[factory]\ncreate = \" vide.create \"\n").create,
+            parse("[factory]\nbackend = \"table\"\ncreate = \" vide.create \"\n").create,
             "vide.create"
         );
     }
@@ -1100,5 +1661,462 @@ mod tests {
     fn rejects_unknown_per_class_tables() {
         let error = parse_err("[properties.Frmae]\nName = \"id\"\n");
         assert!(error.contains("not a creatable Roblox class"), "{error}");
+    }
+
+    /// The `[factory]` variables beyond `create` (factory-plan.md §3,
+    /// backend-plan.md §5.3).
+    mod factory {
+        use super::*;
+
+        #[test]
+        /// Writing a `[factory]` block turns every assumption off. That is the
+        /// rule that makes the React default safe: a project that configures
+        /// anything is configuring everything that matters.
+        fn a_factory_block_assumes_nothing() {
+            let config = parse("[factory]\nbackend = \"table\"\n");
+
+            assert_eq!(config.create, BARE_CREATE);
+            assert_eq!(config.children, None);
+            assert_eq!(config.event, None);
+            assert_eq!(config.compute, None);
+            assert_eq!(config.use_fn, None);
+            assert_eq!(config.fragment, None);
+            assert_eq!(config.interpolate, Interpolate::Wrap);
+        }
+
+        #[test]
+        fn children_round_trips() {
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\nchildren = \"Children\"\n")
+                    .children
+                    .as_deref(),
+                Some("Children")
+            );
+        }
+
+        /// Fusion's spelling: the expression is *called* with the event name.
+        #[test]
+        fn an_event_without_a_trailing_dot_is_called() {
+            let config = parse("[factory]\nbackend = \"table\"\nevent = \"OnEvent\"\n");
+
+            assert_eq!(config.event, Some(EventKey::Call("OnEvent".to_string())));
+            assert_eq!(
+                config.event.expect("event").key("Activated"),
+                "[OnEvent(\"Activated\")]"
+            );
+        }
+
+        /// React's spelling: `React.Event.Activated` is a field access, not a
+        /// call, and a trailing dot is how that is already written in Luau.
+        #[test]
+        fn an_event_with_a_trailing_dot_is_indexed() {
+            let config = parse("[factory]\nbackend = \"table\"\nevent = \"React.Event.\"\n");
+
+            assert_eq!(
+                config.event,
+                Some(EventKey::Index("React.Event".to_string()))
+            );
+            assert_eq!(
+                config.event.expect("event").key("Activated"),
+                "[React.Event.Activated]"
+            );
+        }
+
+        /// The root of the *expression*, not of the spelling — the trailing dot
+        /// is syntax for which form to emit and is not part of the name the
+        /// file has to have in scope.
+        #[test]
+        fn an_indexed_event_exposes_its_expression_without_the_dot() {
+            let config = parse("[factory]\nbackend = \"table\"\nevent = \"React.Event.\"\n");
+
+            assert_eq!(config.event.expect("event").expression(), "React.Event");
+        }
+
+        #[test]
+        fn compute_round_trips() {
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\ncompute = \"scope:Computed\"\n")
+                    .compute
+                    .as_deref(),
+                Some("scope:Computed")
+            );
+        }
+
+        /// Inert without `compute`, and *reported* rather than silently kept.
+        /// A value nothing reads is a question about the config, and
+        /// `parse_reporting` is the channel built for exactly that.
+        #[test]
+        fn use_without_compute_is_reported_as_inert() {
+            let (config, warnings) =
+                Config::parse_reporting("[factory]\nbackend = \"table\"\nuse = \"peek\"\n")
+                    .expect("config");
+
+            assert_eq!(config.use_fn.as_deref(), None);
+            assert_eq!(warnings.len(), 1, "{warnings:?}");
+            assert!(warnings[0].contains("does nothing without"), "{warnings:?}");
+        }
+
+        /// A malformed `use` is rejected whether or not anything reads it.
+        /// Staying quiet would make the key look accepted right up until
+        /// `compute` is added and the callback stops parsing.
+        #[test]
+        fn an_inert_use_is_still_checked() {
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\nuse = \"end\"\n").contains("keyword")
+            );
+        }
+
+        /// `use` names the reader inside `compute`'s callback, so it is inert
+        /// without one — and resolving the default here means the backend never
+        /// has to ask whether the name means anything.
+        #[test]
+        fn use_resolves_only_alongside_compute() {
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\nuse = \"peek\"\n")
+                    .use_fn
+                    .as_deref(),
+                None
+            );
+
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\ncompute = \"c\"\n")
+                    .use_fn
+                    .as_deref(),
+                Some(DEFAULT_USE)
+            );
+
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\ncompute = \"c\"\nuse = \"peek\"\n")
+                    .use_fn
+                    .as_deref(),
+                Some("peek")
+            );
+        }
+
+        #[test]
+        fn every_key_rejects_an_empty_value() {
+            for key in ["children", "event", "compute", "use"] {
+                let error = parse_err(&format!("[factory]\nbackend = \"table\"\n{key} = \"\"\n"));
+                assert!(error.contains("cannot be empty"), "{key}: {error}");
+                assert!(error.contains(key), "{key}: {error}");
+            }
+        }
+
+        /// Each value is checked in the shape it is *emitted* into, because the
+        /// shapes are not interchangeable. Without this a typo surfaces from
+        /// `compile_verified` as luaux's own "please report it" internal error.
+        #[test]
+        fn each_key_is_checked_in_its_own_emission_shape() {
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\nchildren = \"Chil dren\"\n")
+                    .contains("children")
+            );
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\nevent = \"On Event\"\n")
+                    .contains("event")
+            );
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\ncompute = \"a b c\"\n")
+                    .contains("compute")
+            );
+        }
+
+        /// `..` is Luau's concatenation operator, so `React..Event` parses — as
+        /// a string, which is not a table key anyone meant. Caught by name
+        /// before the probe waves it through.
+        #[test]
+        fn a_doubled_dot_is_caught_by_name() {
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\nchildren = \"a..b\"\n")
+                    .contains("has a `.` with no name beside it")
+            );
+        }
+
+        /// A bare dot selects the index form and leaves nothing to index with.
+        #[test]
+        fn an_event_that_is_only_a_dot_is_rejected() {
+            assert!(parse_err("[factory]\nbackend = \"table\"\nevent = \".\"\n")
+                .contains("has a `.` with no name beside it"));
+        }
+
+        /// `use` is a *binding* — the callback's parameter — not an expression,
+        /// so a dotted or called value cannot work, and a keyword would silently
+        /// change what the callback means.
+        #[test]
+        fn use_has_to_be_a_plain_identifier() {
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\ncompute = \"c\"\nuse = \"end\"\n")
+                    .contains("keyword")
+            );
+            assert!(parse_err(
+                "[factory]\nbackend = \"table\"\ncompute = \"c\"\nuse = \"scope.use\"\n"
+            )
+            .contains("not an identifier"));
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\ncompute = \"c\"\nuse = \"2nd\"\n")
+                    .contains("not an identifier")
+            );
+        }
+
+        /// Accepted spellings, so the check does not reject something ordinary.
+        #[test]
+        fn accepts_the_shapes_the_libraries_actually_use() {
+            parse("[factory]\nbackend = \"table\"\ncreate = \"scope:New\"\nchildren = \"Children\"\nevent = \"OnEvent\"\ncompute = \"scope:Computed\"\n");
+            parse("[factory]\nbackend = \"table\"\ncreate = \"React.createElement\"\nevent = \"React.Event.\"\n");
+            parse("[factory]\nbackend = \"table\"\nchildren = \"Fusion.Children\"\n");
+        }
+    }
+
+    /// Backend selection and the keys only the element arrangement uses
+    /// (backend-plan.md §5.1, §5.2, §5.4, §5.5).
+    mod backend {
+        use super::*;
+
+        const REACT: &str = "[factory]\nbackend = \"element\"\nfragment = \"React.Fragment\"\n";
+
+        #[test]
+        /// With no `[factory]` block at all, luaux picks React — the one place
+        /// it names a library.
+        fn the_zero_config_default_is_react() {
+            let config = parse("");
+
+            assert_eq!(config.backend, BackendKind::Element);
+            assert_eq!(config.create, "React.createElement");
+            assert_eq!(config.fragment.as_deref(), Some("React.Fragment"));
+            assert_eq!(config.interpolate, Interpolate::Plain);
+            assert_eq!(
+                config.event.expect("event").key("Activated"),
+                "[React.Event.Activated]"
+            );
+        }
+
+        /// The rule that keeps the flipped default from ever being silent. A
+        /// Vide project that set only `create` would otherwise inherit React's
+        /// arrangement and pass the in-scope check, because its own name really
+        /// is in scope — and emit the wrong shape without a word.
+        #[test]
+        fn a_factory_block_has_to_name_its_backend() {
+            let error = parse_err("[factory]\ncreate = \"vide.create\"\n");
+
+            assert!(error.contains("needs a backend"), "{error}");
+            assert!(error.contains("element"), "{error}");
+        }
+
+        #[test]
+        fn backend_round_trips() {
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\n").backend,
+                BackendKind::Table
+            );
+            assert_eq!(parse(REACT).backend, BackendKind::Element);
+        }
+
+        #[test]
+        fn an_unknown_backend_lists_the_two() {
+            let error = parse_err("[factory]\nbackend = \"react\"\n");
+            assert!(error.contains("table, element"), "{error}");
+        }
+
+        #[test]
+        fn interpolate_round_trips() {
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\ninterpolate = \"plain\"\n").interpolate,
+                Interpolate::Plain
+            );
+            assert!(
+                parse_err("[factory]\nbackend = \"table\"\ninterpolate = \"none\"\n")
+                    .contains("wrap, plain")
+            );
+        }
+
+        /// A bare table is not an element, and there is nothing sensible to
+        /// guess — so this is refused at load rather than at the first fragment.
+        #[test]
+        fn the_element_backend_needs_a_fragment() {
+            let error = parse_err("[factory]\nbackend = \"element\"\n");
+            assert!(error.contains("needs a fragment"), "{error}");
+        }
+
+        /// `children` is a *table key*, and this arrangement has no table to put
+        /// one in. Rejected rather than ignored: a key that silently does
+        /// nothing is the hardest kind to debug, because the output looks
+        /// deliberate (backend-plan.md §5.5).
+        #[test]
+        fn the_element_backend_rejects_a_children_key() {
+            let error = parse_err(&format!("{REACT}children = \"Children\"\n"));
+            assert!(error.contains("passes children as an argument"), "{error}");
+        }
+
+        /// The one pair of `[factory]` keys that steer the same decision, and
+        /// so the one pair that can contradict each other. Before this rule the
+        /// emission resolved it by dropping the wrapper, which handed a Fusion
+        /// project text that silently never updated — from a config that named
+        /// the very thing meant to update it.
+        #[test]
+        fn plain_interpolation_and_a_compute_wrapper_contradict() {
+            let error = parse_err(
+                "[factory]\nbackend = \"table\"\ncompute = \"scope:Computed\"\n\
+                 interpolate = \"plain\"\n",
+            );
+
+            assert!(error.contains("nothing for compute to wrap"), "{error}");
+        }
+
+        /// Either alone is ordinary: `plain` is React's, `compute` is Fusion's.
+        #[test]
+        fn either_alone_is_fine() {
+            parse("[factory]\nbackend = \"table\"\ncompute = \"scope:Computed\"\n");
+            parse("[factory]\nbackend = \"table\"\ninterpolate = \"plain\"\n");
+        }
+
+        /// A fragment is a plain table under this arrangement and the key is
+        /// never read, so setting it would hand a project the fragment it always
+        /// had from a config naming something else. The mirror of the `children`
+        /// rule, and the same reason.
+        #[test]
+        fn the_table_backend_rejects_a_fragment() {
+            let error =
+                parse_err("[factory]\nbackend = \"table\"\nfragment = \"Fusion.Fragment\"\n");
+
+            assert!(
+                error.contains("only read by the element backend"),
+                "{error}"
+            );
+        }
+
+        /// Modes follow the arrangement; names do not. A React block that names
+        /// its backend and omits `interpolate` must not inherit the one-table
+        /// default — that hands React a *function* as the Text prop, plus an
+        /// inlined reader, from a config that never asked for either.
+        #[test]
+        fn modes_follow_the_named_backend() {
+            let react = parse(
+                "[factory]\nbackend = \"element\"\ncreate = \"React.createElement\"\n\
+                 fragment = \"React.Fragment\"\n",
+            );
+
+            assert_eq!(react.interpolate, Interpolate::Plain);
+            assert_eq!(react.static_conditional_child, LintLevel::Off);
+
+            let table = parse("[factory]\nbackend = \"table\"\n");
+            assert_eq!(table.interpolate, Interpolate::Wrap);
+            assert_eq!(table.static_conditional_child, LintLevel::Warn);
+        }
+
+        /// The two constructors are the two ways a config comes into existence,
+        /// and every field one leaves to `..Self::default()` is a React value.
+        /// The lint level reached `bare()` that way once.
+        #[test]
+        fn the_two_constructors_do_not_leak_into_each_other() {
+            let bare = Config::bare();
+            assert_eq!(bare.backend, BackendKind::Table);
+            assert_eq!(bare.interpolate, Interpolate::Wrap);
+            assert_eq!(bare.static_conditional_child, LintLevel::Warn);
+            assert_eq!(bare.fragment, None);
+            assert_eq!(bare.event, None);
+            assert_eq!(bare.create, BARE_CREATE);
+
+            let react = Config::default();
+            assert_eq!(react.backend, BackendKind::Element);
+            assert_eq!(react.interpolate, Interpolate::Plain);
+            assert_eq!(react.static_conditional_child, LintLevel::Off);
+        }
+
+        /// A project with no `luaux.toml` at all is the arrangement the React
+        /// default exists to serve, and it never passes through `parse`. The
+        /// lint was defaulted off in the parsed path only, so that project got
+        /// React *and* a warning telling it to wrap a conditional child in a
+        /// function — advice that makes React render the function.
+        #[test]
+        fn the_no_file_path_gets_the_same_modes_as_the_parsed_one() {
+            let absent = Config::default();
+            let empty = parse("");
+
+            assert_eq!(absent.backend, empty.backend);
+            assert_eq!(absent.interpolate, empty.interpolate);
+            assert_eq!(
+                absent.static_conditional_child,
+                empty.static_conditional_child
+            );
+        }
+
+        /// Every key is checked by parsing a probe built around its value, and
+        /// `--` opens a Luau comment. A value ending in `) --` closed the probe's
+        /// own parenthesis and commented away the rest, so it parsed and reached
+        /// emission anyway — surfacing as luaux's "please report it" internal
+        /// error, which is the one thing the check exists to prevent.
+        #[test]
+        fn a_factory_value_cannot_comment_out_its_own_probe() {
+            for key in [
+                "create", "children", "event", "compute", "fragment", "merge",
+            ] {
+                let error = parse_err(&format!(
+                    "[factory]\nbackend = \"table\"\n{key} = \"a) --\"\n"
+                ));
+
+                assert!(error.contains("cannot contain a comment"), "{key}: {error}");
+            }
+        }
+
+        /// A newline survives trimming and is emitted verbatim, shifting every
+        /// line below it — the file keeps compiling and quietly stops lining up
+        /// with its source.
+        #[test]
+        fn a_factory_value_has_to_be_one_line() {
+            let error = parse_err("[factory]\nbackend = \"table\"\ncreate = \"vide.\\ncreate\"\n");
+            assert!(error.contains("has to be one line"), "{error}");
+        }
+
+        #[test]
+        fn fragment_is_checked_in_its_emission_shape() {
+            assert!(
+                parse_err("[factory]\nbackend = \"element\"\nfragment = \"a b\"\n")
+                    .contains("fragment")
+            );
+        }
+
+        /// The lint's premise — a child built once can never update — is false
+        /// where the component body re-runs. Left on, it would call the single
+        /// most idiomatic thing in JSX a mistake.
+        #[test]
+        fn the_static_child_lint_defaults_off_under_the_element_backend() {
+            assert_eq!(parse(REACT).static_conditional_child, LintLevel::Off);
+            assert_eq!(
+                parse("[factory]\nbackend = \"table\"\n").static_conditional_child,
+                LintLevel::Warn
+            );
+        }
+
+        /// Defaulted off, not removed. A project that wants the check can ask.
+        #[test]
+        fn an_explicit_lint_level_still_wins() {
+            let config = parse(&format!(
+                "{REACT}\n[lints]\nstatic_conditional_child = \"error\"\n"
+            ));
+
+            assert_eq!(config.static_conditional_child, LintLevel::Error);
+        }
+
+        /// The block a React project would actually write.
+        #[test]
+        fn accepts_the_react_shape() {
+            let config = parse(
+                "[factory]\n\
+                 backend = \"element\"\n\
+                 create = \"React.createElement\"\n\
+                 event = \"React.Event.\"\n\
+                 fragment = \"React.Fragment\"\n\
+                 interpolate = \"plain\"\n",
+            );
+
+            assert_eq!(config.backend, BackendKind::Element);
+            assert_eq!(config.create, "React.createElement");
+            assert_eq!(config.fragment.as_deref(), Some("React.Fragment"));
+            assert_eq!(config.interpolate, Interpolate::Plain);
+            assert_eq!(
+                config.event.expect("event").key("Activated"),
+                "[React.Event.Activated]"
+            );
+        }
     }
 }

@@ -190,11 +190,55 @@ impl<'a> Parser<'a> {
                 continue;
             }
 
+            // `={props.Text}` — the name is the expression's last segment.
+            //
+            // Unambiguous in this position: an attribute is a name, a name with
+            // a value, or a spread, and none of them can start with `=`. The
+            // spelling is `=` rather than a bare `{Text}` because a bare hole
+            // already means a spread here, and one syntax cannot mean two
+            // things.
+            if self.at("=") {
+                self.pos += 1;
+                self.skip_whitespace();
+
+                if !self.at("{") {
+                    return self.err("expected `{expression}` after `=`");
+                }
+
+                let expression = self.parse_braced_expression()?;
+                attributes.push(Attribute::Inferred {
+                    expression,
+                    span: Span::new(start, self.pos),
+                });
+                continue;
+            }
+
             let name = self.parse_identifier()?;
             let after_name = self.pos;
             self.skip_whitespace();
+            let spaced = self.pos != after_name;
 
             let value = if self.at("=") {
+                // `Visible ={props.Size}` has two readings: a value for
+                // `Visible`, or `Visible` as a boolean shorthand beside an
+                // inferred attribute. Refuse rather than pick — picking emitted
+                // `Visible = props.Size`, which sets a property the author did
+                // not name, leaves the one they did name unset, and resolves
+                // cleanly because `Visible` is a real property. No diagnostic,
+                // wrong UI.
+                //
+                // Only a hole is ambiguous. `Name = "a"` cannot be the inferred
+                // form, which always takes one.
+                if spaced && self.src[self.pos + 1..].trim_start().starts_with('{') {
+                    return self.error_at(
+                        format!(
+                            "`{name} ={{…}}` could be a value for {name}, or {name} on its own \
+                             beside an inferred attribute"
+                        ),
+                        after_name,
+                    );
+                }
+
                 self.pos += 1;
                 self.skip_whitespace();
                 self.parse_attribute_value()?
@@ -566,6 +610,85 @@ mod tests {
                 },
             ]
         );
+    }
+
+    /// `={expr}` is unambiguous in attribute position: an attribute is a name, a
+    /// name with a value, or a spread, and none of them can begin with `=`.
+    #[test]
+    fn parses_an_inferred_attribute() {
+        let element = element(r#"<Frame ={props.Size} Name="a" ={Visible} />"#);
+        assert_eq!(
+            element.attributes,
+            vec![
+                Attribute::Inferred {
+                    expression: "props.Size".into(),
+                    span: Span::new(7, 20),
+                },
+                Attribute::Named {
+                    name: "Name".into(),
+                    value: AttributeValue::StringLiteral("\"a\"".into()),
+                    span: Span::new(21, 29),
+                },
+                Attribute::Inferred {
+                    expression: "Visible".into(),
+                    span: Span::new(30, 40),
+                },
+            ]
+        );
+    }
+
+    /// The parser only takes the expression; whether it *names* anything is
+    /// decided later, where the mistake can be recovered from.
+    #[test]
+    fn an_inferred_attribute_takes_any_expression() {
+        let element = element(r#"<Frame ={f().x} />"#);
+        assert_eq!(
+            element.attributes[0],
+            Attribute::Inferred {
+                expression: "f().x".into(),
+                span: Span::new(7, 15),
+            }
+        );
+    }
+
+    /// `Visible ={x}` reads two ways, and picking one silently set a property
+    /// the author never named while leaving the one they did name unset — with
+    /// no diagnostic, because `Visible` resolves perfectly well.
+    #[test]
+    fn a_shorthand_beside_an_inferred_attribute_is_refused() {
+        for source in [
+            "<Frame Visible ={props.Size}/>",
+            "<Frame\n  Visible\n  ={props.Size}\n/>",
+        ] {
+            let error = parse_node(source, 0).expect_err("should fail");
+            assert!(
+                error.message.contains("could be a value for"),
+                "{source}: {error:?}"
+            );
+        }
+    }
+
+    /// Only a hole is ambiguous — the inferred form always takes one — so a
+    /// spaced string or a spaced hole-less value is untouched.
+    #[test]
+    fn spacing_around_a_value_is_otherwise_fine() {
+        let element = element(r#"<Frame Name = "a" />"#);
+        assert_eq!(
+            element.attributes[0],
+            Attribute::Named {
+                name: "Name".into(),
+                value: AttributeValue::StringLiteral("\"a\"".into()),
+                span: Span::new(7, 17),
+            }
+        );
+    }
+
+    /// A shorthand with no hole after it is a parse error, not a name.
+    #[test]
+    fn an_inferred_attribute_needs_a_hole() {
+        assert!(parse_node("<Frame = />", 0).is_err());
+        assert!(parse_node("<Frame =\"a\" />", 0).is_err());
+        assert!(parse_node("<Frame =Size />", 0).is_err());
     }
 
     #[test]

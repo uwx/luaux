@@ -62,7 +62,20 @@ pub fn configure(source_root: &Path) -> Result<Config, String> {
     find_config(source_root)
 }
 
+/// The backend named by `[factory] backend`.
+///
+/// Boxed rather than matched at each call site: the choice is per-build and the
+/// selection belongs in one place, not once per file.
+fn backend(config: &Config) -> Box<dyn luaux::Backend> {
+    match config.backend {
+        luaux::config::BackendKind::Table => Box::new(luaux::Table),
+        luaux::config::BackendKind::Element => Box::new(luaux::Element),
+    }
+}
+
 pub fn run(options: &Options, config: &Config) -> Report {
+    let backend = backend(config);
+
     let mut report = Report::default();
 
     let selector = match Selector::new(&config.build.include, &config.build.exclude) {
@@ -99,7 +112,8 @@ pub fn run(options: &Options, config: &Config) -> Report {
 
         let path = input.display().to_string();
 
-        let (compiled, warnings) = match luaux::compile_verified(&source, &luaux::Vide, config) {
+        let (compiled, warnings) = match luaux::compile_verified(&source, backend.as_ref(), config)
+        {
             Ok(result) => result,
             Err(error) => {
                 diagnose(&path, &source, &error, true);

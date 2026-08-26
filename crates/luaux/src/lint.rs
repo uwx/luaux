@@ -59,15 +59,31 @@ fn has_nil_and_operand(expression: &Expression) -> bool {
 }
 
 /// The `static_conditional_child` warning (PLAN.md §11.1).
-pub fn static_conditional_child(offset: usize, length: usize) -> crate::compile::Warning {
+///
+/// The suggestion is built from `[factory] compute`, because the fix is not the
+/// same under every library. A bare function is what Vide tracks; under Fusion
+/// a bare function is a value, and the reactive form is the configured wrapper.
+/// Suggesting the wrong one sends someone to write code that silently does
+/// nothing — which is what this lint exists to prevent.
+pub fn static_conditional_child(
+    offset: usize,
+    length: usize,
+    compute: Option<&str>,
+) -> crate::compile::Warning {
+    let help = match compute {
+        Some(wrapper) => {
+            format!("wrap it so the library tracks it: {{{wrapper}(function() return ... end)}}")
+        }
+        None => "wrap it in a function so the library tracks it: {function() return ... end}"
+            .to_string(),
+    };
+
     crate::compile::Warning {
         message: "this child is built once, so a condition around it will not update the UI"
             .to_string(),
         offset,
         length: length + 2,
-        help: Some(
-            "wrap it in a function so Vide tracks it: {function() return ... end}".to_string(),
-        ),
+        help: Some(help),
     }
 }
 
@@ -75,7 +91,7 @@ pub fn static_conditional_child(offset: usize, length: usize) -> crate::compile:
 ///
 /// Such LuauX is constructed exactly once, so a condition around it looks live but
 /// is not — the `static_conditional_child` lint (PLAN.md §11.1). LuauX *inside* a
-/// function is fine: Vide re-runs the function, which is how reactive children
+/// function is fine: the library re-runs it, which is how reactive children
 /// work, and it covers the idiomatic `items:map(function() return <Row/> end)`.
 ///
 /// Works on the pre-compilation source, where LuauX is still `<...>`.

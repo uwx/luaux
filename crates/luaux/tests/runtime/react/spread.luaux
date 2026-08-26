@@ -1,0 +1,32 @@
+--!nocheck
+local React = require("@pkg/@jsdotlua/react")
+local ReactRoblox = require("@pkg/@jsdotlua/react-roblox")
+
+local function mount(element)
+	local container = Instance.new("Folder")
+	ReactRoblox.createLegacyRoot(container):render(element)
+	return container:GetChildren()[1]
+end
+
+return function(check)
+	-- The merge helper is inlined into this file, and its result becomes the
+	-- props argument. String keys are last-wins, so source order decides.
+	local shared = { Name = "shared", Text = "from-spread" }
+
+	local overridden = mount(<TextLabel {shared} Text="from-attribute" />)
+	check("spread applied", overridden.Name == "shared")
+	check("later attribute wins", overridden.Text == "from-attribute")
+
+	local spreadWins = mount(<TextLabel Text="from-attribute" {shared} />)
+	check("later spread wins", spreadWins.Text == "from-spread")
+
+	-- A spread and children coexist: the merge produces the props argument and
+	-- the children stay in the third.
+	local withChildren = mount(
+		<Frame {{ Name = "parent" }}>
+			<TextLabel Name="child" />
+		</Frame>
+	)
+	check("spread parent named", withChildren.Name == "parent")
+	check("children still parented", withChildren:GetChildren()[1].Name == "child")
+end

@@ -11,15 +11,55 @@ use crate::markup::ElementName;
 use crate::resolve::{Resolution, Resolver};
 use std::cell::{Cell, RefCell};
 
-/// Which runtime helpers an emission actually referenced.
+/// Which `[factory]` entries and inlined helpers an emission actually
+/// referenced.
 ///
-/// Tracked so the compiler only injects a `require` for what a file really uses
-/// — a module with no spreads should not gain a `mergeProps` import.
+/// Tracked so the compiler only inlines what a file really uses — a module with
+/// no spreads should not gain a `mergeProps` helper — and only demands a
+/// binding for a factory entry the file actually named. A Vide project that
+/// never interpolates text should not be told to import `Children`.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct Helpers {
     pub create: bool,
     pub read: bool,
     pub merge_props: bool,
+    pub children: bool,
+    pub event: bool,
+    pub compute: bool,
+    pub fragment: bool,
+    pub merge: bool,
+}
+
+impl std::ops::BitOrAssign for Helpers {
+    /// Folds one region's usage into the file's.
+    ///
+    /// An operator rather than field-by-field at the call site, because that is
+    /// how this went wrong: the merge listed three fields, every field added
+    /// after them was dropped, and the symptom was generated code referencing a
+    /// helper that was never inlined — a runtime failure, from a compiler whose
+    /// whole point is catching things at build time.
+    fn bitor_assign(&mut self, other: Self) {
+        let Self {
+            create,
+            read,
+            merge_props,
+            children,
+            event,
+            compute,
+            fragment,
+            merge,
+        } = other;
+
+        // Destructured so a new field is a compile error here, not a silence.
+        self.create |= create;
+        self.read |= read;
+        self.merge_props |= merge_props;
+        self.children |= children;
+        self.event |= event;
+        self.compute |= compute;
+        self.fragment |= fragment;
+        self.merge |= merge;
+    }
 }
 
 /// Byte offsets of the start of each line, plus the file-wide name resolver.
@@ -30,6 +70,11 @@ pub struct EmitContext<'a> {
     create: Cell<bool>,
     read: Cell<bool>,
     merge_props: Cell<bool>,
+    children: Cell<bool>,
+    event: Cell<bool>,
+    compute: Cell<bool>,
+    fragment: Cell<bool>,
+    merge: Cell<bool>,
     /// Resolution errors recovered from rather than returned.
     ///
     /// A name that does not resolve is a mistake in one tag, and stopping there
@@ -63,6 +108,11 @@ impl<'a> EmitContext<'a> {
             create: Cell::new(false),
             read: Cell::new(false),
             merge_props: Cell::new(false),
+            children: Cell::new(false),
+            event: Cell::new(false),
+            compute: Cell::new(false),
+            fragment: Cell::new(false),
+            merge: Cell::new(false),
             errors: RefCell::default(),
         }
     }
@@ -70,6 +120,53 @@ impl<'a> EmitContext<'a> {
     /// Expression that constructs an element — `[factory] create`.
     pub fn create(&self) -> &str {
         self.resolver.create()
+    }
+
+    /// Table key an element's children go under — `[factory] children`.
+    ///
+    /// `None` leaves children as numeric entries in the props table.
+    pub fn children(&self) -> Option<&str> {
+        self.resolver.children()
+    }
+
+    /// How an event name becomes a table key — `[factory] event`.
+    ///
+    /// `None` leaves an event as an ordinary string key.
+    pub fn event(&self) -> Option<&crate::config::EventKey> {
+        self.resolver.event()
+    }
+
+    /// Wrapper for interpolated text — `[factory] compute`.
+    ///
+    /// `None` emits the thunk form and inlines the read helper instead.
+    pub fn compute(&self) -> Option<&str> {
+        self.resolver.compute()
+    }
+
+    /// The reader's name inside `compute`'s callback — `[factory] use`.
+    ///
+    /// Always `Some` when [`EmitContext::compute`] is, resolved at config load.
+    pub fn use_fn(&self) -> Option<&str> {
+        self.resolver.use_fn()
+    }
+
+    /// The component a fragment is constructed with — `[factory] fragment`.
+    ///
+    /// `None` leaves a fragment as a plain table.
+    pub fn fragment(&self) -> Option<&str> {
+        self.resolver.fragment()
+    }
+
+    /// How interpolated text is encoded — `[factory] interpolate`.
+    pub fn interpolate(&self) -> crate::config::Interpolate {
+        self.resolver.interpolate()
+    }
+
+    /// How spread groups combine — `[factory] merge`.
+    ///
+    /// `None` inlines luaux's own helper instead.
+    pub fn merge(&self) -> Option<&str> {
+        self.resolver.merge()
     }
 
     pub fn used_create(&self) {
@@ -84,11 +181,36 @@ impl<'a> EmitContext<'a> {
         self.merge_props.set(true);
     }
 
+    pub fn used_children(&self) {
+        self.children.set(true);
+    }
+
+    pub fn used_event(&self) {
+        self.event.set(true);
+    }
+
+    pub fn used_compute(&self) {
+        self.compute.set(true);
+    }
+
+    pub fn used_fragment(&self) {
+        self.fragment.set(true);
+    }
+
+    pub fn used_merge(&self) {
+        self.merge.set(true);
+    }
+
     pub fn helpers(&self) -> Helpers {
         Helpers {
             create: self.create.get(),
             read: self.read.get(),
             merge_props: self.merge_props.get(),
+            children: self.children.get(),
+            event: self.event.get(),
+            compute: self.compute.get(),
+            fragment: self.fragment.get(),
+            merge: self.merge.get(),
         }
     }
 
@@ -129,6 +251,16 @@ impl<'a> EmitContext<'a> {
                 written.to_string()
             }
         }
+    }
+
+    /// Records an error and carries on, the way [`EmitContext::resolve`] does
+    /// for a name that does not resolve.
+    ///
+    /// For mistakes that are contained to one attribute or one tag. Returning
+    /// instead would cost the file every other diagnostic in it, including
+    /// everything a type checker would say about the generated Luau.
+    pub fn record(&self, error: EmitError) {
+        self.errors.borrow_mut().push(error);
     }
 
     /// The recovered errors, in the order they were found.

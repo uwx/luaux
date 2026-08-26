@@ -1,0 +1,37 @@
+--!nocheck
+local React = require("@pkg/@jsdotlua/react")
+local ReactRoblox = require("@pkg/@jsdotlua/react-roblox")
+
+local function mount(element)
+	local container = Instance.new("Folder")
+	ReactRoblox.createLegacyRoot(container):render(element)
+	return container:GetChildren()[1]
+end
+
+return function(check)
+	-- Text between the tags folds into the Text property at compile time.
+	local plain = mount(<TextLabel Name="L">Hello</TextLabel>)
+	check("literal text folded", plain.Text == "Hello")
+
+	-- Interpolated text under `interpolate = "plain"` is an ordinary string:
+	-- React has no per-prop reactivity, so there is nothing to wrap and no
+	-- reader to inline.
+	local name, count = "world", 3
+	local interpolated = mount(<TextLabel Name="L">Hi {name}, {count} new</TextLabel>)
+	check("interpolation built", interpolated.Text == "Hi world, 3 new")
+
+	-- A single expression child is emitted bare, which under React means the
+	-- value reaches the property untouched.
+	local label = "bare"
+	local single = mount(<TextLabel Name="L">{label}</TextLabel>)
+	check("single expression passes through", single.Text == "bare")
+
+	-- A binding is React's reactive value, and it is the one thing LuauX must
+	-- *not* read: interpolating it would stringify the binding. Passed as a
+	-- whole prop it stays live.
+	local binding, setBinding = React.createBinding("one")
+	local bound = mount(<TextLabel Name="L" Text={binding} />)
+	check("binding applied", bound.Text == "one")
+	setBinding("two")
+	check("binding updates the instance", bound.Text == "two")
+end

@@ -4,7 +4,7 @@
 //!   through (§11.5).
 //! * `check <src>` — the same, without writing anything.
 //! * `watch <src> [out]` — rebuild on change, to run beside `rojo serve`.
-//! * `init [dir]` — scaffold a `luaux.toml`.
+//! * `init [dir] [--library <name>]` — scaffold a `luaux.toml`.
 //! * `scan <path>...` — report where the lexer believes LuauX begins. Pointed at a
 //!   tree of plain `.luau`, every hit is a false positive; that is the Phase 0
 //!   acceptance check (PLAN.md §5.2).
@@ -60,7 +60,7 @@ fn run() -> ExitCode {
         Some("build") => build(rest, true),
         Some("check") => build(rest, false),
         Some("watch") => start_watch(rest),
-        Some("init") => run_init(rest.first().map(Path::new).unwrap_or(Path::new("."))),
+        Some("init") => run_init(rest),
         Some("scan") if !rest.is_empty() => scan(rest),
         _ => {
             usage();
@@ -75,6 +75,7 @@ fn usage() {
     eprintln!("  luaux check [src]         compile without writing");
     eprintln!("  luaux watch [src] [out]   rebuild on change");
     eprintln!("  luaux init [dir]          scaffold a luaux.toml");
+    eprintln!("    --library <name>        write a [factory] block: react, vide, fluid, fusion");
     eprintln!("  luaux scan <path>...      report where LuauX is detected");
     eprintln!();
     eprintln!("  paths default to [build] in/out in luaux.toml; arguments override them.");
@@ -161,8 +162,29 @@ fn start_watch(args: &[String]) -> ExitCode {
     }
 }
 
-fn run_init(directory: &Path) -> ExitCode {
-    match init::run(directory) {
+/// `luaux init [dir] [--library <name>]`.
+///
+/// The flag is accepted in either position, since `init --library react` and
+/// `init . --library react` are both natural to type.
+fn run_init(args: &[String]) -> ExitCode {
+    let mut directory = Path::new(".");
+    let mut library = None;
+    let mut rest = args.iter();
+
+    while let Some(argument) = rest.next() {
+        match argument.as_str() {
+            "--library" => match rest.next() {
+                Some(name) => library = Some(name.as_str()),
+                None => {
+                    eprintln!("luaux: --library needs a name");
+                    return ExitCode::FAILURE;
+                }
+            },
+            other => directory = Path::new(other),
+        }
+    }
+
+    match init::run(directory, library) {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("luaux: {error}");

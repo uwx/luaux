@@ -84,8 +84,21 @@ pub struct Warning {
     pub help: Option<String>,
 }
 
+/// Compiles with the default config for the arrangement `backend` emits.
+///
+/// The config has to match the backend, and `Config::default()` alone no longer
+/// does: it is React's, so pairing it with the one-table backend emitted React's
+/// names around a curried constructor — `React.createElement("Frame")({ … })` —
+/// which is neither library's shape. A caller with a `luaux.toml` wants
+/// [`compile_configured`]; this is the no-config entry point, and no-config has
+/// to mean the default *for what you asked for*.
 pub fn compile(source: &str, backend: &dyn Backend) -> Result<String, CompileError> {
-    Ok(compile_configured(source, backend, Config::default())?.0)
+    let config = match backend.name() {
+        "element" => Config::default(),
+        _ => Config::bare(),
+    };
+
+    Ok(compile_configured(source, backend, config)?.0)
 }
 
 /// A compile that produced output, and everything it has to say about it.
@@ -263,10 +276,7 @@ fn compile_with(
         out.push_str(&emitted?);
         cursor = end;
 
-        let used = context.helpers();
-        helpers.create |= used.create;
-        helpers.read |= used.read;
-        helpers.merge_props |= used.merge_props;
+        *helpers |= context.helpers();
 
         lexer.seek(end);
         scanner.note_luaux_region();
@@ -360,6 +370,14 @@ fn compile_element(
                     )?;
                 }
             }
+            // An inferred name comes from a dotted path, which cannot contain
+            // markup — but the walk stays exhaustive rather than assuming that,
+            // so relaxing the inference rule later cannot quietly skip a region.
+            Attribute::Inferred { expression, .. } => {
+                *expression = compile_with(
+                    expression, backend, resolver, level, warnings, errors, helpers,
+                )?;
+            }
         }
     }
 
@@ -384,10 +402,10 @@ fn compile_fragment(
     errors: &mut Vec<CompileError>,
     helpers: &mut crate::backend::Helpers,
 ) -> Result<(), CompileError> {
-    // Text in an element becomes its `Text` property. A fragment is a plain
-    // table with no element to carry it, and Vide's numeric slots take an
-    // Instance, a table or a function — never a string. So the text has nowhere
-    // to go, and the backend used to drop it without a word.
+    // Text in an element becomes its `Text` property. A fragment has no element
+    // to carry one, under either arrangement — it is a plain table in the first
+    // and a component with no props in the second — so the text has nowhere to
+    // go, and the backend used to drop it without a word.
     if let Some(Child::Text { text, span }) = fragment
         .children
         .iter()
@@ -398,8 +416,8 @@ fn compile_fragment(
             offset: span.start,
             length: span.end.saturating_sub(span.start),
             help: Some(format!(
-                "a fragment is a plain table, so there is no element for the text \
-                 to belong to; wrap it in one, as <TextLabel>{text}</TextLabel>"
+                "text becomes an element's Text property, and a fragment is not \
+                 an element; wrap it in one, as <TextLabel>{text}</TextLabel>"
             )),
         });
     }
@@ -436,7 +454,11 @@ fn compile_children(
                     let spans = luaux_spans(expression).unwrap_or_default();
 
                     if lint::has_unwrapped_luaux(expression, &spans) {
-                        let warning = lint::static_conditional_child(span.start, expression.len());
+                        let warning = lint::static_conditional_child(
+                            span.start,
+                            expression.len(),
+                            resolver.compute(),
+                        );
 
                         if level == LintLevel::Error {
                             return Err(CompileError {
@@ -468,7 +490,7 @@ fn compile_children(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::Vide;
+    use crate::backend::Table;
 
     /// Fixtures do not import Vide, so the factory-in-scope check would fire.
     /// That check is covered directly by `imports::tests`.
@@ -481,7 +503,7 @@ mod tests {
     const BINDING: &str = "local create = _G.create; ";
 
     fn try_build(source: &str) -> Result<String, CompileError> {
-        compile_configured(&format!("{BINDING}{source}"), &Vide, test_config())
+        compile_configured(&format!("{BINDING}{source}"), &Table, test_config())
             .map(|(output, _)| output)
     }
 
@@ -699,8 +721,9 @@ mod tests {
         strip_preamble(
             &compile_configured(
                 &format!("{BINDING}{source}"),
-                &Vide,
-                crate::Config::parse(config).expect("config"),
+                &Table,
+                crate::Config::parse(&format!("[factory]\nbackend = \"table\"\n{config}"))
+                    .expect("config"),
             )
             .expect("compile")
             .0,
@@ -709,7 +732,7 @@ mod tests {
 
     /// Warnings raised while compiling with the default config.
     fn warnings_for(source: &str) -> Vec<Warning> {
-        compile_configured(&format!("{BINDING}{source}"), &Vide, test_config())
+        compile_configured(&format!("{BINDING}{source}"), &Table, test_config())
             .expect("compile")
             .1
     }
@@ -717,8 +740,9 @@ mod tests {
     fn build_with_err(source: &str, config: &str) -> String {
         let error = compile_configured(
             &format!("{BINDING}{source}"),
-            &Vide,
-            crate::Config::parse(config).expect("config"),
+            &Table,
+            crate::Config::parse(&format!("[factory]\nbackend = \"table\"\n{config}"))
+                .expect("config"),
         )
         .expect_err("should fail");
         match error.help {
@@ -738,8 +762,8 @@ mod tests {
         // A double quote does, and the result must still parse.
         let out = compile_verified(
             &format!("{BINDING}local e = <TextLabel>say \"hi\"</TextLabel>"),
-            &Vide,
-            &crate::Config::default(),
+            &Table,
+            &test_config(),
         );
         let out = out.expect("valid Luau").0;
         assert!(out.contains(r#"Text = "say \"hi\"""#), "{out}");
@@ -884,7 +908,7 @@ mod tests {
     /// server — can say anything about the file either. One mistake should cost
     /// one diagnostic.
     fn recovered(source: &str) -> Compiled {
-        compile_recovering(&format!("{BINDING}{source}"), &Vide, test_config())
+        compile_recovering(&format!("{BINDING}{source}"), &Table, test_config())
             .expect("a resolution error is not fatal")
     }
 
@@ -952,7 +976,7 @@ mod tests {
     #[test]
     fn a_parse_error_is_still_fatal() {
         assert!(
-            compile_recovering(&format!("{BINDING}local e = <Frame"), &Vide, test_config())
+            compile_recovering(&format!("{BINDING}local e = <Frame"), &Table, test_config())
                 .is_err()
         );
     }
@@ -1010,7 +1034,7 @@ mod tests {
 
     #[test]
     fn the_factory_must_be_in_scope() {
-        let error = compile_configured("local e = <Frame/>", &Vide, Config::default())
+        let error = compile_configured("local e = <Frame/>", &Table, Config::with_create("create"))
             .expect_err("should fail");
         assert!(
             error.message.contains("`create` is not in scope"),
@@ -1020,7 +1044,7 @@ mod tests {
         // And a dotted factory checks its root.
         let ok = compile_configured(
             "local vide = require('./vide')\nlocal e = <Frame/>",
-            &Vide,
+            &Table,
             Config::with_create("vide.create"),
         );
         assert!(ok.is_ok(), "{ok:?}");
@@ -1042,7 +1066,7 @@ mod tests {
 
                 let (plain, _) = compile_verified(
                     "local scope = _G.s\nlocal e = <Frame Size={1}/>",
-                    &Vide,
+                    &Table,
                     &config,
                 )
                 .expect("valid Luau");
@@ -1053,7 +1077,7 @@ mod tests {
 
                 let (spread, _) = compile_verified(
                     "local scope = _G.s\nlocal p = {}\nlocal e = <Frame {p} Size={1}/>",
-                    &Vide,
+                    &Table,
                     &config,
                 )
                 .expect("valid Luau");
@@ -1076,7 +1100,7 @@ mod tests {
     fn a_const_import_satisfies_the_factory() {
         let ok = compile_configured(
             "const vide = require('./vide')\nlocal e = <Frame/>",
-            &Vide,
+            &Table,
             Config::with_create("vide.create"),
         );
         assert!(ok.is_ok(), "{ok:?}");
@@ -1111,17 +1135,22 @@ mod tests {
 
         let off = compile_configured(
             &format!("{BINDING}{source}"),
-            &Vide,
-            crate::Config::parse("[lints]\nstatic_conditional_child = \"off\"\n").expect("config"),
+            &Table,
+            crate::Config::parse(
+                "[factory]\nbackend = \"table\"\n[lints]\nstatic_conditional_child = \"off\"\n",
+            )
+            .expect("config"),
         )
         .expect("compile");
         assert!(off.1.is_empty());
 
         let escalated = compile_configured(
             &format!("{BINDING}{source}"),
-            &Vide,
-            crate::Config::parse("[lints]\nstatic_conditional_child = \"error\"\n")
-                .expect("config"),
+            &Table,
+            crate::Config::parse(
+                "[factory]\nbackend = \"table\"\n[lints]\nstatic_conditional_child = \"error\"\n",
+            )
+            .expect("config"),
         );
         assert!(escalated.is_err());
     }
@@ -1163,15 +1192,15 @@ mod tests {
         // early, leaving a stray bracket as code.
         let out = compile_verified(
             &format!("{BINDING}local e = <Frame><!-- see list[1] --></Frame>"),
-            &Vide,
-            &crate::Config::default(),
+            &Table,
+            &test_config(),
         );
         assert!(out.is_ok(), "{out:?}");
 
         let nested = compile_verified(
             &format!("{BINDING}local e = <Frame><!-- a ]] b --></Frame>"),
-            &Vide,
-            &crate::Config::default(),
+            &Table,
+            &test_config(),
         );
         assert!(nested.is_ok(), "{nested:?}");
         assert!(
@@ -1185,8 +1214,8 @@ mod tests {
         // `{ --[[c]] }` — a table holding only a comment.
         let out = compile_verified(
             &format!("{BINDING}local e = <Frame><!-- only --></Frame>"),
-            &Vide,
-            &crate::Config::default(),
+            &Table,
+            &test_config(),
         );
         assert!(out.is_ok(), "{out:?}");
     }
@@ -1233,6 +1262,20 @@ mod tests {
         "local e = (\n  <Frame>\n\n  </Frame>\n)\n",
         "local e = (\n  <>\n  </>\n)\n",
         "local e = (\n  <Frame>\n    <TextLabel>\n    </TextLabel>\n  </Frame>\n)\n",
+        // A spread *after* a named attribute. This is the shape that splits
+        // into two groups, and the group that is not last must not carry the
+        // emission to the closing tag — handed the close, the first group burnt
+        // every line the element had left, so the spread landed on the closing
+        // tag with blank lines above it. Every spread fixture here used to put
+        // the spread first or use spreads only, which is exactly why nothing
+        // caught it.
+        "local e = (\n  <Frame\n    Name={n}\n    {props}\n  />\n)\n",
+        "local e = (\n  <Frame\n    Name={n}\n    {props}\n  >\n    <TextLabel/>\n  </Frame>\n)\n",
+        // The same, with the spread holding an expression of its own lines. The
+        // one above loses *placement*; this one lost the line **count**, because
+        // a verbatim push from the closing line adds newlines the source never
+        // had.
+        "local e = (\n  <Frame\n    Name={n}\n    {f(\n      base\n    )}\n  />\n)\n",
         // Nothing *but* spreads. These emit no table, so the closing brace that
         // usually carries the emission down to the closing tag is never written
         // — the fixture above with a `Name` beside its spread hides that, since
@@ -1357,12 +1400,674 @@ mod tests {
             .spawn(move || {
                 for fixture in fixtures.iter().chain(MULTILINE_FIXTURES.iter()) {
                     let bound = format!("{BINDING}{fixture}");
-                    compile_verified(&bound, &Vide, &test_config())
+                    compile_verified(&bound, &Table, &test_config())
                         .unwrap_or_else(|error| panic!("{fixture}\n  -> {error}"));
                 }
             })
             .expect("spawn")
             .join()
             .expect("verification thread");
+    }
+
+    /// The `[factory]` variables (factory-plan.md), exercised through the shape
+    /// they exist to serve. Fusion is the same *arrangement* as Vide — one
+    /// curried constructor taking one table — with four things inside it moved,
+    /// which is exactly the claim these keys make.
+    mod factory {
+        use super::*;
+
+        /// Parsed rather than built by hand, so every test here also covers the
+        /// config validation that stands between a typo and luaux's own
+        /// "please report it" internal error.
+        fn fusion_config() -> Config {
+            Config::parse(
+                "[factory]\nbackend = \"table\"\n\
+                 create = \"scope:New\"\n\
+                 children = \"Children\"\n\
+                 event = \"OnEvent\"\n\
+                 compute = \"scope:Computed\"\n",
+            )
+            .expect("config")
+        }
+
+        /// Bound on line 1, like the outer `BINDING`, so no fixture's line
+        /// count moves.
+        const BINDING: &str = "local scope, Children, OnEvent = _G.a, _G.b, _G.c; ";
+
+        pub(super) fn build(source: &str) -> String {
+            let output = compile_configured(&format!("{BINDING}{source}"), &Table, fusion_config())
+                .map(|(output, _)| output)
+                .expect("compile");
+
+            strip_preamble(&output)
+                .strip_prefix(BINDING)
+                .expect("binding")
+                .to_string()
+        }
+
+        #[test]
+        fn children_go_under_the_configured_key() {
+            assert_eq!(
+                build("local e = <Frame Size={s}><UICorner/></Frame>"),
+                "local e = scope:New(\"Frame\")({ Size = s, [Children] = { scope:New(\"UICorner\")({}) } })"
+            );
+        }
+
+        /// `<Frame/>` must not gain `[Children] = {}`. An empty entry is not
+        /// wrong so much as noise in every leaf of a tree, and leaves are most
+        /// of a tree (factory-plan.md §3.1).
+        #[test]
+        fn an_element_with_no_children_gains_no_entry() {
+            assert_eq!(
+                build("local e = <Frame/>"),
+                "local e = scope:New(\"Frame\")({})"
+            );
+        }
+
+        /// The README promises components and intrinsics are interchangeable at
+        /// the call site. Handing one children under a key and the other in the
+        /// array part would break that over a guess about what a component
+        /// expects of its own props.
+        #[test]
+        fn children_apply_to_components_too() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card Color={c}><TextLabel/></Card>"),
+                "local Card = f()\nlocal e = Card({ Color = c, [Children] = { scope:New(\"TextLabel\")({}) } })"
+            );
+        }
+
+        #[test]
+        fn an_event_becomes_a_wrapped_key() {
+            assert_eq!(
+                build("local e = <TextButton Activated={fire}>Fire</TextButton>"),
+                "local e = scope:New(\"TextButton\")({ [OnEvent(\"Activated\")] = fire, Text = \"Fire\" })"
+            );
+        }
+
+        /// A property is not an event, and wrapping one would assign the
+        /// handler to a key the library never reads.
+        #[test]
+        fn a_property_is_left_alone() {
+            assert_eq!(
+                build("local e = <Frame Size={s}/>"),
+                "local e = scope:New(\"Frame\")({ Size = s })"
+            );
+        }
+
+        /// `is_event` can only answer for an intrinsic. A component's props are
+        /// arbitrary, so wrapping a name that happens to be an event on *some*
+        /// class would be a guess — and a wrong guess here is silent, because
+        /// the component simply never sees the prop it was passed.
+        #[test]
+        fn a_component_prop_is_never_wrapped_as_an_event() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card Activated={fire}/>"),
+                "local Card = f()\nlocal e = Card({ Activated = fire })"
+            );
+        }
+
+        /// The headline of `compute`: interpolated text is the one place LuauX
+        /// generates reactivity, and it is the one place the two libraries
+        /// disagree about how.
+        #[test]
+        fn interpolated_text_uses_the_configured_wrapper() {
+            assert_eq!(
+                build("local e = <TextLabel>HP {health} / {max}</TextLabel>"),
+                "local e = scope:New(\"TextLabel\")({ Text = scope:Computed(function(use) return `HP {use(health)} / {use(max)}` end) })"
+            );
+        }
+
+        /// Setting `compute` *removes* a dependency: a project configured this
+        /// way never sees `__luaux_read` in its output, because the reader comes
+        /// from the callback instead.
+        #[test]
+        fn the_read_helper_is_not_inlined_under_compute() {
+            let output = compile_configured(
+                &format!("{BINDING}local e = <TextLabel>HP {{health}}</TextLabel>"),
+                &Table,
+                fusion_config(),
+            )
+            .map(|(output, _)| output)
+            .expect("compile");
+
+            assert!(!output.contains("__luaux_read"), "{output}");
+        }
+
+        /// Unchanged in every mode. Vide accepts a source on a property key and
+        /// Fusion accepts a state object, so neither needs a wrapper for the
+        /// value it was already handed.
+        #[test]
+        fn a_single_expression_stays_bare() {
+            assert_eq!(
+                build("local e = <TextLabel>{label}</TextLabel>"),
+                "local e = scope:New(\"TextLabel\")({ Text = label })"
+            );
+        }
+
+        /// Nothing reactive about a literal, so no wrapper and no reader.
+        #[test]
+        fn literal_text_is_untouched() {
+            assert_eq!(
+                build("local e = <TextLabel>Hi</TextLabel>"),
+                "local e = scope:New(\"TextLabel\")({ Text = \"Hi\" })"
+            );
+        }
+
+        /// A spread still splits the props into groups, and the children entry
+        /// joins the last of them rather than escaping the merge.
+        #[test]
+        fn a_spread_and_children_coexist() {
+            assert_eq!(
+                build("local e = <Frame {props} Size={s}><UICorner/></Frame>"),
+                "local e = scope:New(\"Frame\")(__luaux_merge(props, { Size = s, [Children] = { scope:New(\"UICorner\")({}) } }))"
+            );
+        }
+
+        /// A fragment is a plain table under both libraries — Fusion's `Child`
+        /// recurses arrays to any depth — so `children` deliberately does not
+        /// reach it (factory-plan.md §1.2).
+        #[test]
+        fn a_fragment_needs_no_children_key() {
+            assert_eq!(
+                build("local e = <><Frame/></>"),
+                "local e = { scope:New(\"Frame\")({}) }"
+            );
+        }
+
+        /// The `[Children] = {` wrapper adds a nesting level the writer has to
+        /// carry without adding a newline of its own. It is the change most
+        /// likely to break the line-preservation invariant, so every multiline
+        /// fixture runs under this config too.
+        #[test]
+        fn output_preserves_line_count() {
+            for fixture in MULTILINE_FIXTURES {
+                let compiled = build(fixture);
+                assert_eq!(
+                    compiled.lines().count(),
+                    fixture.lines().count(),
+                    "line count changed\n--- in ---\n{fixture}\n--- out ---\n{compiled}"
+                );
+            }
+        }
+
+        /// A bare function is what Vide tracks; under Fusion it is just a
+        /// value, and the reactive form is the configured wrapper. Suggesting
+        /// the wrong one sends someone to write code that silently does
+        /// nothing, which is the failure this lint exists to catch.
+        #[test]
+        fn the_lint_suggests_the_configured_wrapper() {
+            let (_, warnings) = compile_configured(
+                &format!("{BINDING}local e = <Frame>{{cond and <TextLabel/> or nil}}</Frame>"),
+                &Table,
+                fusion_config(),
+            )
+            .expect("compile");
+
+            let help = warnings
+                .first()
+                .expect("a warning")
+                .help
+                .as_deref()
+                .expect("help");
+
+            assert!(
+                help.contains("scope:Computed(function() return ... end)"),
+                "{help}"
+            );
+        }
+
+        /// Both closing braces target the closing tag's line, and `writer.to` is
+        /// a no-op the second time, so they land together rather than the inner
+        /// one stranding a line.
+        #[test]
+        fn children_close_on_the_closing_tag() {
+            let compiled = build("local e = (\n  <Frame>\n    <UICorner/>\n  </Frame>\n)\n");
+
+            assert_eq!(
+                compiled,
+                "local e = (\n  scope:New(\"Frame\")({ [Children] = {\n    scope:New(\"UICorner\")({}),\n  } })\n)\n"
+            );
+        }
+    }
+
+    /// The element backend (backend-plan.md §3) — `F(class, props, children)`.
+    ///
+    /// React is the shape these are written against, and the differences from
+    /// the one-table arrangement are the ones a backend exists to carry:
+    /// children in a third argument, components through the factory, and a
+    /// fragment that is an element rather than a plain table.
+    mod element {
+        use super::*;
+        use crate::backend::Element;
+
+        fn react_config() -> Config {
+            Config::parse(
+                "[factory]\n\
+                 backend = \"element\"\n\
+                 create = \"React.createElement\"\n\
+                 event = \"React.Event.\"\n\
+                 fragment = \"React.Fragment\"\n\
+                 interpolate = \"plain\"\n",
+            )
+            .expect("config")
+        }
+
+        /// Bound on line 1, so no fixture's line count moves. One binding
+        /// covers `createElement`, `Event`, and `Fragment` — they share a root.
+        const BINDING: &str = "local React = _G.react; ";
+
+        pub(super) fn build(source: &str) -> String {
+            let output =
+                compile_configured(&format!("{BINDING}{source}"), &Element, react_config())
+                    .map(|(output, _)| output)
+                    .expect("compile");
+
+            strip_preamble(&output)
+                .strip_prefix(BINDING)
+                .expect("binding")
+                .to_string()
+        }
+
+        #[test]
+        fn children_are_the_third_argument() {
+            assert_eq!(
+                build("local e = <Frame Size={s}><UICorner/></Frame>"),
+                "local e = React.createElement(\"Frame\", { Size = s }, { React.createElement(\"UICorner\", {}) })"
+            );
+        }
+
+        /// A leaf takes no third argument at all, rather than an empty table
+        /// nothing reads.
+        #[test]
+        fn a_leaf_has_no_children_argument() {
+            assert_eq!(
+                build("local e = <Frame/>"),
+                "local e = React.createElement(\"Frame\", {})"
+            );
+        }
+
+        /// The arrangement's own difference: a component is the factory's first
+        /// argument, not a function to call. Under the one-table backend the
+        /// same source emits `Card({...})`.
+        #[test]
+        fn a_component_goes_through_the_factory() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card Color={c}><TextLabel/></Card>"),
+                "local Card = f()\nlocal e = React.createElement(Card, { Color = c }, { React.createElement(\"TextLabel\", {}) })"
+            );
+        }
+
+        /// `React.Event.Activated` is a field access, which the call form
+        /// `[E(\"Activated\")]` cannot express — the gap backend-plan.md §5.3
+        /// closes with the trailing dot.
+        #[test]
+        fn an_event_is_indexed_rather_than_called() {
+            assert_eq!(
+                build("local e = <TextButton Activated={fire}>Fire</TextButton>"),
+                "local e = React.createElement(\"TextButton\", { [React.Event.Activated] = fire, Text = \"Fire\" })"
+            );
+        }
+
+        /// A plain table is a fragment under a one-table library and is not one
+        /// here, so it needs a component of its own.
+        #[test]
+        fn a_fragment_is_an_element() {
+            assert_eq!(
+                build("local e = <><Frame/><TextLabel/></>"),
+                "local e = React.createElement(React.Fragment, nil, { React.createElement(\"Frame\", {}), React.createElement(\"TextLabel\", {}) })"
+            );
+        }
+
+        /// No wrapper, no reader, no helper. Under a library with no per-prop
+        /// reactivity a hole is already a value, and reading it would mean
+        /// calling something the author meant to interpolate.
+        #[test]
+        fn interpolated_text_is_a_plain_string() {
+            assert_eq!(
+                build("local e = <TextLabel>HP {health} / {max}</TextLabel>"),
+                "local e = React.createElement(\"TextLabel\", { Text = `HP {health} / {max}` })"
+            );
+        }
+
+        #[test]
+        fn the_read_helper_is_not_inlined_under_plain_interpolation() {
+            let output = compile_configured(
+                &format!("{BINDING}local e = <TextLabel>HP {{health}}</TextLabel>"),
+                &Element,
+                react_config(),
+            )
+            .map(|(output, _)| output)
+            .expect("compile");
+
+            assert!(!output.contains("__luaux_read"), "{output}");
+        }
+
+        #[test]
+        fn a_spread_merges_into_the_props_argument() {
+            assert_eq!(
+                build("local e = <Frame {props} Size={s}><UICorner/></Frame>"),
+                "local e = React.createElement(\"Frame\", __luaux_merge(props, { Size = s }), { React.createElement(\"UICorner\", {}) })"
+            );
+        }
+
+        /// §12.1, answered against real react-lua under Lune rather than by
+        /// reading the source. A nil child leaves a hole in the table, and the
+        /// hole is *correct*: React renders nothing for it and every sibling
+        /// keeps its index, so a conditional child that toggles does not remount
+        /// the children after it.
+        ///
+        /// An earlier version of this backend compacted the list through an
+        /// inlined helper, on the theory that `#` on a holed table could
+        /// truncate. It does not — a table constructor presizes its array part —
+        /// and compacting would have *moved* later children, which under React's
+        /// implicit keys is the remount it was meant to prevent.
+        #[test]
+        fn an_expression_child_keeps_its_position() {
+            assert_eq!(
+                build("local e = <Frame>{items}</Frame>"),
+                "local e = React.createElement(\"Frame\", {}, { items })"
+            );
+        }
+
+        /// No helper, for any shape of children. The element backend inlines
+        /// nothing of its own.
+        #[test]
+        fn children_never_cost_a_helper() {
+            for source in [
+                "local e = <Frame>{items}</Frame>",
+                "local e = <Frame><UICorner/>{items}</Frame>",
+                "local e = <><Frame/>{items}</>",
+            ] {
+                let output =
+                    compile_configured(&format!("{BINDING}{source}"), &Element, react_config())
+                        .map(|(output, _)| output)
+                        .expect("compile");
+
+                assert!(!output.contains("__luaux_children"), "{source}: {output}");
+            }
+        }
+
+        /// Element children can never be nil, so they cost no helper.
+        /// The whole point of tracking a helper is inlining it. Every other
+        /// test here strips the preamble, so a helper that was referenced and
+        /// never emitted looked exactly like one that worked — until the
+        /// generated file called an undefined global at runtime. That is a bug
+        /// this suite actually shipped, caught by building a file end to end.
+        #[test]
+        fn a_referenced_helper_is_actually_inlined() {
+            let output = compile_configured(
+                &format!("{BINDING}local e = <Frame {{props}} Size={{s}}/>"),
+                &Element,
+                react_config(),
+            )
+            .map(|(output, _)| output)
+            .expect("compile");
+
+            assert!(output.contains("__luaux_merge(props,"), "{output}");
+            assert!(
+                output.contains("local function __luaux_merge"),
+                "referenced but never inlined:\n{output}"
+            );
+        }
+
+        /// The in-scope check has to reach a real compile, not just
+        ///  called directly.  is only ever referenced
+        /// from inside an emission, so this is the path that proves it.
+        #[test]
+        fn an_unbound_fragment_is_caught_in_a_real_compile() {
+            let error = compile_configured(
+                "local createElement = _G.c; local e = <><Frame/></>",
+                &Element,
+                Config::parse(
+                    "[factory]
+backend = \"element\"
+create = \"createElement\"
+fragment = \"Frag\"
+",
+                )
+                .expect("config"),
+            )
+            .expect_err("should fail");
+
+            assert!(
+                error.message.contains("`Frag` is not in scope"),
+                "{error:?}"
+            );
+        }
+
+        #[test]
+        fn element_children_need_no_helper() {
+            let output = compile_configured(
+                &format!("{BINDING}local e = <Frame><UICorner/></Frame>"),
+                &Element,
+                react_config(),
+            )
+            .map(|(output, _)| output)
+            .expect("compile");
+
+            assert!(!output.contains("__luaux_children"), "{output}");
+        }
+
+        /// The props table is *not* the last argument here, so it must not span
+        /// to the closing tag — those lines belong to the children. Getting this
+        /// wrong collapses the children onto the closing tag's line while the
+        /// line count still checks out, which is why it has its own test.
+        #[test]
+        fn the_children_argument_owns_the_closing_line() {
+            assert_eq!(
+                build("local e = (\n  <Frame>\n    <UICorner/>\n  </Frame>\n)\n"),
+                "local e = (\n  React.createElement(\"Frame\", {}, {\n    React.createElement(\"UICorner\", {}),\n  })\n)\n"
+            );
+        }
+
+        #[test]
+        fn output_preserves_line_count() {
+            for fixture in MULTILINE_FIXTURES {
+                let compiled = build(fixture);
+                assert_eq!(
+                    compiled.lines().count(),
+                    fixture.lines().count(),
+                    "line count changed\n--- in ---\n{fixture}\n--- out ---\n{compiled}"
+                );
+            }
+        }
+
+        /// Every fixture has to re-parse as Luau. The compaction helper's
+        /// argument list is the shape most likely to get this wrong, since a
+        /// call takes no trailing comma where a table does.
+        #[test]
+        fn every_fixture_reparses() {
+            // full_moon's recursive-descent parser has large stack frames in
+            // debug builds — enough to exhaust a test thread's 2 MB. Same reason
+            // the one-table suite spawns, and the same reason the CLI sets
+            // `STACK` in luaux-cli's main.rs.
+            std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(|| {
+                    for fixture in MULTILINE_FIXTURES {
+                        let source = format!("{BINDING}{fixture}");
+                        compile_verified(&source, &Element, &react_config())
+                            .unwrap_or_else(|error| panic!("{fixture}\n  -> {error}"));
+                    }
+                })
+                .expect("spawn")
+                .join()
+                .expect("verification thread");
+        }
+    }
+
+    /// `={expr}` — the property is inferred from the expression.
+    ///
+    /// The spelling is `=` rather than a bare `{Text}` because a bare hole in
+    /// attribute position already means a spread, and one syntax cannot mean two
+    /// things. Everything after the name is decided stays shared with a written
+    /// attribute: aliases, the property check, event wrapping, and Rule 5.
+    mod inferred {
+        use super::*;
+
+        #[test]
+        fn a_bare_name_names_itself() {
+            assert_eq!(
+                build("local e = <TextLabel ={Text}/>"),
+                "local e = create(\"TextLabel\")({ Text = Text })"
+            );
+        }
+
+        #[test]
+        fn a_dotted_path_names_its_last_segment() {
+            assert_eq!(
+                build("local e = <TextLabel ={props.Text}/>"),
+                "local e = create(\"TextLabel\")({ Text = props.Text })"
+            );
+            assert_eq!(
+                build("local e = <Frame ={self.props.BackgroundColor3}/>"),
+                "local e = create(\"Frame\")({ BackgroundColor3 = self.props.BackgroundColor3 })"
+            );
+        }
+
+        #[test]
+        fn several_can_sit_beside_written_attributes() {
+            assert_eq!(
+                build("local e = <Frame Name=\"n\" ={props.Size} ={props.Visible}/>"),
+                "local e = create(\"Frame\")({ Name = \"n\", Size = props.Size, Visible = props.Visible })"
+            );
+        }
+
+        /// The inferred name is a name like any other, so a class that has no
+        /// such property says so — with the underline on the shorthand.
+        #[test]
+        fn an_unknown_property_is_still_rejected() {
+            let error = try_build("local e = <Frame ={props.Nonsense}/>").expect_err("should fail");
+            assert!(
+                error
+                    .message
+                    .contains("no property or event named Nonsense"),
+                "{error:?}"
+            );
+        }
+
+        /// An expression that is not a name has no name to take. Recovered from
+        /// rather than fatal, because it is a mistake in one attribute — the
+        /// same reason an unknown property is.
+        #[test]
+        fn an_expression_that_names_nothing_is_reported() {
+            let error = try_build("local e = <Frame ={getProps().Size}/>").expect_err("fail");
+
+            assert!(
+                error
+                    .message
+                    .contains("cannot tell which property this names"),
+                "{error:?}"
+            );
+            assert!(
+                error.help.expect("help").contains("={props.Text}"),
+                "the help has to show the shapes that do work"
+            );
+        }
+
+        /// One unusable shorthand costs its own diagnostic, not the file's.
+        #[test]
+        fn the_rest_of_the_file_still_compiles() {
+            let compiled = compile_recovering(
+                &format!("{BINDING}local a = <Frame ={{f()}}/>\nlocal b = <Frame Name=\"ok\"/>"),
+                &Table,
+                test_config(),
+            )
+            .expect("compile");
+
+            assert_eq!(compiled.errors.len(), 1, "{:?}", compiled.errors);
+            assert!(
+                compiled.output.contains("Name = \"ok\""),
+                "{}",
+                compiled.output
+            );
+        }
+
+        /// `={...}` decides *which* name, and nothing else. Once it has one, the
+        /// attribute takes the same path a written one does.
+        #[test]
+        fn the_inferred_name_goes_through_aliases() {
+            let compiled = build_with(
+                "local e = <Frame ={props.bgColor}/>",
+                "[properties.Frame]\nBackgroundColor3 = \"bgColor\"\n",
+            );
+
+            assert_eq!(
+                compiled,
+                "local e = create(\"Frame\")({ BackgroundColor3 = props.bgColor })"
+            );
+        }
+
+        /// Likewise for events, which are wrapped by the same rule.
+        #[test]
+        fn an_inferred_event_is_wrapped() {
+            assert_eq!(
+                factory::build("local e = <TextButton ={props.Activated}/>"),
+                "local e = scope:New(\"TextButton\")({ [OnEvent(\"Activated\")] = props.Activated })"
+            );
+        }
+
+        /// Rule 5 applies to an inferred `Text` exactly as to a written one.
+        #[test]
+        fn text_between_the_tags_still_wins() {
+            assert_eq!(
+                build("local e = <TextLabel ={props.Text}>Body</TextLabel>"),
+                "local e = create(\"TextLabel\")({ Text = \"Body\" })"
+            );
+        }
+
+        /// Resolving before the skip also means a *retired* spelling is now
+        /// rejected here, where Rule 5 used to drop it unexamined. That is the
+        /// README's exclusive-rename rule applied consistently: once a property
+        /// is renamed the old spelling is an error everywhere, and the presence
+        /// of text children is no reason to exempt it.
+        #[test]
+        fn a_retired_text_spelling_is_still_an_error() {
+            let error = compile_configured(
+                &format!("{BINDING}local e = <TextLabel Text=\"A\">Body</TextLabel>"),
+                &Table,
+                Config::parse(
+                    "[factory]\nbackend = \"table\"\n[properties]\nall = \"camelCase\"\n",
+                )
+                .expect("config"),
+            )
+            .expect_err("should fail");
+
+            assert!(error.message.contains("use text"), "{error:?}");
+        }
+
+        /// Rule 5 compares the **canonical** name. Compared against what was
+        /// written, any rename slipped past it and the property was emitted
+        /// twice in one table — Luau takes the last, so the tags won by accident
+        /// rather than by rule. Both spellings are checked because the written
+        /// form had the bug too; the shorthand only made it easy to hit.
+        #[test]
+        fn a_renamed_text_property_does_not_emit_twice() {
+            for source in [
+                "local e = <TextLabel text={props.x}>Body</TextLabel>",
+                "local e = <TextLabel ={props.text}>Body</TextLabel>",
+            ] {
+                let compiled = build_with(source, "[properties]\nall = \"camelCase\"\n");
+
+                assert_eq!(
+                    compiled, "local e = create(\"TextLabel\")({ Text = \"Body\" })",
+                    "{source}"
+                );
+            }
+        }
+
+        /// A shorthand is as tall as it was written, like everything else.
+        #[test]
+        fn output_preserves_line_count() {
+            let fixture =
+                "local e = (\n  <Frame\n    ={props.Size}\n    ={props.Visible}\n  />\n)\n";
+            let compiled = build(fixture);
+
+            assert_eq!(
+                compiled.lines().count(),
+                fixture.lines().count(),
+                "--- out ---\n{compiled}"
+            );
+        }
     }
 }

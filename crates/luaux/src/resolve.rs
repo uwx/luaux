@@ -102,6 +102,41 @@ impl Resolver {
         &self.config.create
     }
 
+    /// Table key an element's children go under — `[factory] children`.
+    pub fn children(&self) -> Option<&str> {
+        self.config.children.as_deref()
+    }
+
+    /// How an event name becomes a table key — `[factory] event`.
+    pub fn event(&self) -> Option<&crate::config::EventKey> {
+        self.config.event.as_ref()
+    }
+
+    /// Wrapper for interpolated text — `[factory] compute`.
+    pub fn compute(&self) -> Option<&str> {
+        self.config.compute.as_deref()
+    }
+
+    /// The reader's name inside `compute`'s callback — `[factory] use`.
+    pub fn use_fn(&self) -> Option<&str> {
+        self.config.use_fn.as_deref()
+    }
+
+    /// The component a fragment is constructed with — `[factory] fragment`.
+    pub fn fragment(&self) -> Option<&str> {
+        self.config.fragment.as_deref()
+    }
+
+    /// How interpolated text is encoded — `[factory] interpolate`.
+    pub fn interpolate(&self) -> crate::config::Interpolate {
+        self.config.interpolate
+    }
+
+    /// How spread groups combine — `[factory] merge`.
+    pub fn merge(&self) -> Option<&str> {
+        self.config.merge.as_deref()
+    }
+
     pub fn resolve(&self, name: &ElementName, offset: usize) -> Result<Resolution, EmitError> {
         let simple = match name {
             // Dotted names are always components; a Roblox class name never has

@@ -85,6 +85,47 @@ jobs:
           grep -q "check(s), 0 failure(s)" result.txt \
             || { echo "::error::runtime suite reported no checks — it skipped"; exit 1; }
 
+  react:
+    name: golden runtime tests (react)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # react-lua is authored for Roblox and darklua, so the environment needs
+      # preparing. The script only rewrites module resolution — no reconciler
+      # logic is touched — and it is what makes this suite reproducible from an
+      # ordinary `npm install`.
+      - name: Prepare react-lua for Lune
+        run: python3 scripts/prepare_react_env.py "$RUNNER_TEMP/react-env"
+
+      - name: Install Lune
+        run: |
+          curl -fsSL -o lune.zip \
+            https://github.com/lune-org/lune/releases/download/v${LUNE_VERSION}/lune-${LUNE_VERSION}-linux-x86_64.zip
+          unzip -o lune.zip -d "$RUNNER_TEMP/lune"
+          chmod +x "$RUNNER_TEMP/lune/lune"
+        env:
+          LUNE_VERSION: 0.10.5
+
+      # Only this suite proves the emitted React *behaves*: that a hole in a
+      # children table renders nothing while its siblings survive, and that
+      # their identity survives a toggle. The second is why luaux does not
+      # compact the list — compacting would move them, and React keys children
+      # by index. Assert it ran rather than trusting a green tick.
+      - name: Run against React
+        shell: bash
+        run: |
+          set -euo pipefail
+          LUAUX_REACT="$RUNNER_TEMP/react-env" LUAUX_LUNE="$RUNNER_TEMP/lune/lune" \
+            cargo test -p luaux --test runtime -- --nocapture 2>&1 | tee result.txt
+          grep -q "check(s), 0 failure(s)" result.txt \
+            || { echo "::error::react runtime suite reported no checks — it skipped"; exit 1; }
+
   corpus:
     name: false-positive sweep
     runs-on: ubuntu-latest
@@ -104,13 +145,20 @@ jobs:
         with:
           repository: centau/vide
           path: corpus/vide
+      # react-lua is the largest body of real Roblox Luau luaux has to leave
+      # alone, and it is where the detector's generic-function false positives
+      # were found in the first place (see markup_scan.rs).
+      - uses: actions/checkout@v4
+        with:
+          repository: jsdotlua/react-lua
+          path: corpus/react-lua
 
       - name: Sweep
         shell: bash
         run: |
           set -euo pipefail
           # Absolute for the same reason as the Vide job above.
-          LUAUX_CORPUS="$GITHUB_WORKSPACE/corpus/luau:$GITHUB_WORKSPACE/corpus/vide" \
+          LUAUX_CORPUS="$GITHUB_WORKSPACE/corpus/luau:$GITHUB_WORKSPACE/corpus/vide:$GITHUB_WORKSPACE/corpus/react-lua" \
             cargo test -p luaux --test corpus -- --nocapture 2>&1 | tee result.txt
           # Assert on the positive signal. The test also prints "N skipped" for
           # files it could not read, so grepping for "skipped" matches a healthy
