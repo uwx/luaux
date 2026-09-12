@@ -9,10 +9,14 @@
 //! > a curried constructor. Anything that changes the arity or arrangement of the
 //! > constructor call needs a backend.
 //!
-//! Two arrangements cover the Roblox UI libraries:
+//! Three arrangements are implemented:
 //!
-//! * [`Table`] — `F(class)(props)`, children in the props table. Vide, Fusion.
-//! * [`Element`] — `F(class, props, children)`, children positional. React.
+//! * [`Table`] — `F(class)(props)`, children in the props table, a component
+//!   called directly. Vide, Fusion.
+//! * [`Element`] — `F(class, props, children)`, children positional, a
+//!   component through the factory. React.
+//! * [`Curried`] — `F(class)(props)`, children in the props table, but a
+//!   component *also* curries through the factory (ADR-0004).
 //!
 //! The seam exists from the start deliberately (PLAN.md §5.6), and the
 //! raw-`Instance.new` backend in DEFER.md still cannot plug into it: it is
@@ -23,6 +27,7 @@
 
 pub mod common;
 pub mod context;
+pub mod curried;
 pub mod element;
 pub mod table;
 pub mod writer;
@@ -31,6 +36,7 @@ use crate::markup::Node;
 use std::fmt;
 
 pub use context::{EmitContext, Helpers};
+pub use curried::Curried;
 pub use element::Element;
 pub use table::Table;
 

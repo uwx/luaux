@@ -333,12 +333,17 @@ pub struct Config {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BackendKind {
     /// `F(class)(props)` — one curried constructor, children in the props
-    /// table. Vide and Fusion.
+    /// table. A component is called directly, not through the factory.
+    /// Vide and Fusion.
     #[default]
     Table,
     /// `F(class, props, children)` — children in a third positional argument.
     /// React.
     Element,
+    /// `F(class)(props)` — the same curried constructor as `Table`, but a
+    /// component curries through the factory too (`F(Component)(props)`)
+    /// instead of being called directly (ADR-0004).
+    Curried,
 }
 
 impl BackendKind {
@@ -346,6 +351,7 @@ impl BackendKind {
         match text {
             "table" => Some(Self::Table),
             "element" => Some(Self::Element),
+            "curried" => Some(Self::Curried),
             _ => None,
         }
     }
@@ -484,7 +490,7 @@ impl Default for Build {
 const fn arrangement_defaults(backend: BackendKind) -> (Interpolate, LintLevel) {
     match backend {
         BackendKind::Element => (Interpolate::Plain, LintLevel::Off),
-        BackendKind::Table => (Interpolate::Wrap, LintLevel::Warn),
+        BackendKind::Table | BackendKind::Curried => (Interpolate::Wrap, LintLevel::Warn),
     }
 }
 
@@ -649,7 +655,7 @@ impl Config {
         // compiles and is wrong.
         if configured && raw.factory.backend.is_none() {
             return Err(ConfigError {
-                message: "luaux.toml: [factory] needs a backend: \"table\" for Vide, Fluid or Fusion, \"element\" for React"
+                message: "luaux.toml: [factory] needs a backend: \"table\" for Vide, Fluid or Fusion, \"element\" for React, \"curried\" for a library where components curry too"
                     .to_string(),
             });
         }
@@ -657,7 +663,7 @@ impl Config {
         if let Some(backend) = &raw.factory.backend {
             config.backend = BackendKind::parse(backend.trim()).ok_or_else(|| ConfigError {
                 message: format!(
-                    "luaux.toml: [factory] backend = \"{backend}\" is not one of table, element"
+                    "luaux.toml: [factory] backend = \"{backend}\" is not one of table, element, curried"
                 ),
             })?;
         }
@@ -806,7 +812,12 @@ impl Config {
         // never read — so a project that set it would get a fragment built the
         // way it always was, from a config naming something else. Rejected for
         // the same reason `children` is rejected the other way round.
-        if config.backend == BackendKind::Table && config.fragment.is_some() {
+        //
+        // `Curried` shares this rule with `Table`: it changes what a component
+        // curries through, not what a fragment is.
+        if matches!(config.backend, BackendKind::Table | BackendKind::Curried)
+            && config.fragment.is_some()
+        {
             return Err(ConfigError {
                 message: "luaux.toml: [factory] fragment is only read by the element backend; a fragment is a plain table under this one".to_string(),
             });
@@ -1909,12 +1920,39 @@ mod tests {
                 BackendKind::Table
             );
             assert_eq!(parse(REACT).backend, BackendKind::Element);
+            assert_eq!(
+                parse("[factory]\nbackend = \"curried\"\n").backend,
+                BackendKind::Curried
+            );
         }
 
         #[test]
-        fn an_unknown_backend_lists_the_two() {
+        fn an_unknown_backend_lists_all_three() {
             let error = parse_err("[factory]\nbackend = \"react\"\n");
-            assert!(error.contains("table, element"), "{error}");
+            assert!(error.contains("table, element, curried"), "{error}");
+        }
+
+        /// `Curried` shares every default and cross-key rule with `Table` — the
+        /// two arrangements differ only in whether a component curries through
+        /// the factory, which `emit` alone decides.
+        #[test]
+        fn the_curried_backend_follows_the_table_backends_rules() {
+            let curried = parse("[factory]\nbackend = \"curried\"\n");
+            let table = parse("[factory]\nbackend = \"table\"\n");
+            assert_eq!(curried.interpolate, table.interpolate);
+            assert_eq!(
+                curried.static_conditional_child,
+                table.static_conditional_child
+            );
+
+            let error =
+                parse_err("[factory]\nbackend = \"curried\"\nfragment = \"Fusion.Fragment\"\n");
+            assert!(
+                error.contains("only read by the element backend"),
+                "{error}"
+            );
+
+            parse("[factory]\nbackend = \"curried\"\nchildren = \"Children\"\n");
         }
 
         #[test]

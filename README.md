@@ -179,9 +179,9 @@ bare `luaux build` works. Every non-source file is copied into the output unless
 
 ## Targets
 
-LuauX does not know about any UI library. It knows two **arrangements** — how a
-constructor call is shaped — and a handful of settings for what goes inside one.
-Between them they cover the libraries people actually use.
+LuauX does not know about any UI library. It knows three **arrangements** — how
+a constructor call is shaped — and a handful of settings for what goes inside
+one. Between them they cover the libraries people actually use.
 
 | Library    | Arrangement                 | `luaux init --library` |
 | ---------- | --------------------------- | ---------------------- |
@@ -189,6 +189,13 @@ Between them they cover the libraries people actually use.
 | **Vide**   | `F(class)(propsAndChildren)`| `vide`                 |
 | **Fluid**  | `F(class)(propsAndChildren)`| `fluid`                |
 | **Fusion** | `F(class)(propsAndChildren)`| `fusion`               |
+
+A fourth arrangement, `curried`, is the same curried shape as Vide, Fluid, and
+Fusion, but a component curries through the factory too —
+`F(Component)(propsAndChildren)` instead of `Component(propsAndChildren)` —
+for a library that treats components and intrinsics identically at the call
+site. It has no `luaux init --library` preset of its own (see ADR-0004); write
+its `[factory]` block by hand.
 
 The same `.luaux` file compiles under all three, with the same line count:
 
@@ -407,8 +414,19 @@ use = "use"                   # the reader inside compute's callback
 merge = "mergeProps"          # replaces the inlined spread helper
 ```
 
+The `curried` arrangement is the same as `table` above — same keys, same
+defaults — except a component curries through `create` too instead of being
+called directly:
+
+```toml
+[factory]
+backend = "curried"           # F(class)(propsAndChildren), components curry too
+create = "create"
+```
+
 `interpolate` follows the arrangement — `plain` under `element`, `wrap` under
-`table` — and is there to override when a library does not match its shape.
+`table` and `curried` — and is there to override when a library does not match
+its shape.
 
 > [!IMPORTANT]
 > **Writing a `[factory]` block turns every default off**, and `backend` becomes

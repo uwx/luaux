@@ -13,7 +13,7 @@ pub mod markup_scan;
 pub mod resolve;
 pub mod roblox;
 
-pub use backend::{Backend, Element, Table};
+pub use backend::{Backend, Curried, Element, Table};
 pub use compile::{compile, compile_verified, CompileError};
 pub use config::{Config, ConfigError};
 pub use lexer::{tokenize, LexError, Token, TokenKind};

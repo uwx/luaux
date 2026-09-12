@@ -1896,6 +1896,108 @@ fragment = \"Frag\"
         }
     }
 
+    /// The curried backend (ADR-0004) — `F(class)(props)`, the same curried
+    /// constructor as the one-table arrangement, except a component curries
+    /// through the factory too instead of being called directly.
+    mod curried {
+        use super::*;
+        use crate::backend::Curried;
+
+        fn curried_config() -> Config {
+            Config::parse("[factory]\nbackend = \"curried\"\ncreate = \"create\"\n")
+                .expect("config")
+        }
+
+        /// Bound on line 1 so no fixture's line count moves.
+        const BINDING: &str = "local create = _G.create; ";
+
+        fn build(source: &str) -> String {
+            let output =
+                compile_configured(&format!("{BINDING}{source}"), &Curried, curried_config())
+                    .map(|(output, _)| output)
+                    .expect("compile");
+
+            strip_preamble(&output)
+        }
+
+        /// An intrinsic curries exactly like the one-table backend.
+        #[test]
+        fn an_intrinsic_curries() {
+            assert_eq!(
+                build("local e = <Frame/>"),
+                "local e = create(\"Frame\")({})"
+            );
+        }
+
+        /// The arrangement's own difference: a component curries through the
+        /// factory too. Under the one-table backend the same source emits
+        /// `Card({ Color = c, create(\"TextLabel\")({}) })` — a direct call.
+        #[test]
+        fn a_component_curries_through_the_factory_too() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card Color={c}><TextLabel/></Card>"),
+                "local Card = f()\nlocal e = create(Card)({ Color = c, create(\"TextLabel\")({}) })"
+            );
+        }
+
+        /// Children are the array part of the same props table, exactly as
+        /// under the one-table backend.
+        #[test]
+        fn children_are_the_array_part_of_the_props_table() {
+            assert_eq!(
+                build("local e = <Frame><TextLabel/></Frame>"),
+                "local e = create(\"Frame\")({ create(\"TextLabel\")({}) })"
+            );
+        }
+
+        /// A fragment is a plain table under this arrangement too — the same
+        /// libraries this curries components for still recurse tables
+        /// positionally.
+        #[test]
+        fn a_fragment_is_a_plain_table() {
+            assert_eq!(
+                build("local e = <><Frame/><TextLabel/></>"),
+                "local e = { create(\"Frame\")({}), create(\"TextLabel\")({}) }"
+            );
+        }
+
+        #[test]
+        fn a_spread_on_a_component_still_curries() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card {props} Color={c}/>"),
+                "local Card = f()\nlocal e = create(Card)(__luaux_merge(props, { Color = c }))"
+            );
+        }
+
+        #[test]
+        fn output_preserves_line_count() {
+            for fixture in MULTILINE_FIXTURES {
+                let compiled = build(fixture);
+                assert_eq!(
+                    compiled.lines().count(),
+                    fixture.lines().count(),
+                    "line count changed\n--- in ---\n{fixture}\n--- out ---\n{compiled}"
+                );
+            }
+        }
+
+        #[test]
+        fn every_fixture_reparses() {
+            std::thread::Builder::new()
+                .stack_size(16 * 1024 * 1024)
+                .spawn(|| {
+                    for fixture in MULTILINE_FIXTURES {
+                        let source = format!("{BINDING}{fixture}");
+                        compile_verified(&source, &Curried, &curried_config())
+                            .unwrap_or_else(|error| panic!("{fixture}\n  -> {error}"));
+                    }
+                })
+                .expect("spawn")
+                .join()
+                .expect("verification thread");
+        }
+    }
+
     /// `={expr}` — the property is inferred from the expression.
     ///
     /// The spelling is `=` rather than a bare `{Text}` because a bare hole in

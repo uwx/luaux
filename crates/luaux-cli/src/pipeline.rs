@@ -70,6 +70,7 @@ fn backend(config: &Config) -> Box<dyn luaux::Backend> {
     match config.backend {
         luaux::config::BackendKind::Table => Box::new(luaux::Table),
         luaux::config::BackendKind::Element => Box::new(luaux::Element),
+        luaux::config::BackendKind::Curried => Box::new(luaux::Curried),
     }
 }
 
