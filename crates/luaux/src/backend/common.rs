@@ -157,6 +157,15 @@ impl<'a> Props<'a> {
                 continue;
             }
 
+            // Checked against the canonical name, before the event rewrite
+            // below replaces `key` with a wrapped or indexed form — an event's
+            // value is a callback Roblox itself calls, with the event's own
+            // arguments, so wrap_calls must never thunk it: `onClick={
+            // getHandler()}` would otherwise silently swallow the click and
+            // call `getHandler()` again instead of invoking its result.
+            let is_event =
+                matches!(intrinsic, Some(class) if resolved && roblox::is_event(class, &key));
+
             // An event becomes a wrapped key only on an intrinsic, which
             // is the only place `is_event` can answer. A component's
             // props are arbitrary and are never rewritten — wrapping any
@@ -171,6 +180,12 @@ impl<'a> Props<'a> {
                     event.key(&key)
                 }
                 _ => key,
+            };
+
+            let value = if is_event {
+                value
+            } else {
+                wrap_if_call(value, context)
             };
 
             groups.last_mut().expect("a group").push(Entry::Pair {
@@ -412,6 +427,23 @@ pub(super) fn attribute_value(value: &AttributeValue) -> String {
     }
 }
 
+/// Wraps `value` in `function() ... end` when `[factory] wrap_calls` is set
+/// and it contains a function call — the fix for implicit reactive effects
+/// (README, `[factory] wrap_calls`).
+///
+/// A string literal or `true` never contains a call, so this is safe to run
+/// over every attribute value unconditionally; callers still owe it the
+/// exclusions that change *meaning* rather than shape — a spread (a table to
+/// merge, not a single value) and a recognized event on an intrinsic (whose
+/// value Roblox calls itself, with the event's own arguments).
+pub(super) fn wrap_if_call(value: String, context: &EmitContext<'_>) -> String {
+    if context.wrap_calls() && crate::lint::contains_function_call(&value) {
+        format!("function() return {value} end")
+    } else {
+        value
+    }
+}
+
 pub(super) fn child_entries<'a>(
     children: &'a [Child],
     expressions_are_text: bool,
@@ -569,6 +601,16 @@ pub(super) fn plan_text(
             TextMode::Plain => {}
         }
     }
+
+    // `Compute`/`Thunk` already produced their own wrapper above; only a
+    // plain literal or a bare single expression — `references == false` in
+    // both — can still be a call `wrap_calls` should defer, and a literal is
+    // never one in practice.
+    let text = if references {
+        text
+    } else {
+        wrap_if_call(text, context)
+    };
 
     Ok(TextPlan {
         text: Some(text),

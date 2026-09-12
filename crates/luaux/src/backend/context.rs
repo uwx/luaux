@@ -169,6 +169,12 @@ impl<'a> EmitContext<'a> {
         self.resolver.merge()
     }
 
+    /// Whether a property whose expression contains a function call is
+    /// wrapped in `function() ... end` — `[factory] wrap_calls`.
+    pub fn wrap_calls(&self) -> bool {
+        self.resolver.wrap_calls()
+    }
+
     pub fn used_create(&self) {
         self.create.set(true);
     }

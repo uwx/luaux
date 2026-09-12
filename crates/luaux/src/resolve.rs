@@ -137,6 +137,12 @@ impl Resolver {
         self.config.merge.as_deref()
     }
 
+    /// Whether a property whose expression contains a function call is
+    /// wrapped in `function() ... end` — `[factory] wrap_calls`.
+    pub fn wrap_calls(&self) -> bool {
+        self.config.wrap_calls
+    }
+
     pub fn resolve(&self, name: &ElementName, offset: usize) -> Result<Resolution, EmitError> {
         let simple = match name {
             // Dotted names are always components; a Roblox class name never has

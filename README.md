@@ -412,6 +412,7 @@ event = "OnEvent"             # no trailing dot calls: [OnEvent("Activated")]
 compute = "scope:Computed"    # wrapper for interpolated text
 use = "use"                   # the reader inside compute's callback
 merge = "mergeProps"          # replaces the inlined spread helper
+wrap_calls = true             # wrap a call-containing property in function() ... end
 ```
 
 The `curried` arrangement is the same as `table` above — same keys, same
@@ -427,6 +428,25 @@ create = "create"
 `interpolate` follows the arrangement — `plain` under `element`, `wrap` under
 `table` and `curried` — and is there to override when a library does not match
 its shape.
+
+`wrap_calls` addresses a different footgun: under a table-shaped library, a
+function in a source position stays alive and a plain value is dead the
+moment it is captured, so `Size={count()}` calls `count()` once and hands the
+constructor whatever it returned — never again. With `wrap_calls = true`, the
+same property emits `Size = function() return count() end` instead, so the
+library re-runs it whenever it re-reads the property. It only fires when the
+expression actually contains a call — `Size={size}` is untouched — and never
+on a spread (a whole table to merge, not a single value) or on an already
+written function (`Size={function() return count() end}` stays exactly as
+written). It also never applies to a recognized event on a Roblox class, such
+as `Activated`, since Roblox calls an event's value itself with the event's
+own arguments and wrapping it would swallow the call instead of forwarding
+it. That exclusion only works for a Roblox class — a component's props are
+arbitrary, so a call-shaped value passed to a component prop that wants a
+plain callback is wrapped the same as any other; write it as a function
+directly if that is not what you want. Off by default, and rejected under
+`backend = "element"`, where a prop is read once per render and there is
+nothing for a thunk to defer.
 
 > [!IMPORTANT]
 > **Writing a `[factory]` block turns every default off**, and `backend` becomes
