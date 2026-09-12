@@ -5,7 +5,7 @@
 //! `full_moon`.
 
 use crate::backend::EmitError;
-use full_moon::ast::{BinOp, Expression};
+use full_moon::ast::{BinOp, Expression, Prefix, Suffix, Var};
 
 /// Rule 2 — a literal `nil` as the left operand of `and`.
 ///
@@ -154,6 +154,73 @@ fn is_nil_literal(expression: &Expression) -> bool {
     }
 }
 
+/// The `wrap_calls` switch (README, `[factory] wrap_calls`).
+///
+/// Whether `expression` contains a function call anywhere in its own
+/// spine — through parentheses, unary and binary operators, a type
+/// assertion, every branch of an `if` expression, and a `Var::Expression`'s
+/// prefix and suffixes, where Luau's `x()`, `x.y()`, and `x()()` all live.
+///
+/// Never descends into an anonymous function: a call the author already
+/// wrapped is not this function's business, and it is what keeps
+/// `wrap_calls` from double-wrapping `prop={function() return count() end}`.
+/// Nor into a table constructor or an interpolated string's holes — out of
+/// scope for now, the same way [`has_nil_and_operand`] only walks the left
+/// spine of `and`/`or` rather than every possible sub-expression.
+pub fn contains_function_call(expression: &str) -> bool {
+    let wrapped = format!("local _ = {expression}");
+    let parsed = full_moon::parse_fallible(&wrapped, full_moon::LuaVersion::luau());
+
+    let Some(expression_node) = first_expression(parsed.ast()) else {
+        return false;
+    };
+
+    has_function_call(expression_node)
+}
+
+fn has_function_call(expression: &Expression) -> bool {
+    match expression {
+        Expression::FunctionCall(_) => true,
+        Expression::Parentheses { expression, .. } => has_function_call(expression),
+        Expression::UnaryOperator { expression, .. } => has_function_call(expression),
+        Expression::BinaryOperator { lhs, rhs, .. } => {
+            has_function_call(lhs) || has_function_call(rhs)
+        }
+        Expression::TypeAssertion { expression, .. } => has_function_call(expression),
+        Expression::IfExpression(if_expression) => {
+            has_function_call(if_expression.condition())
+                || has_function_call(if_expression.if_expression())
+                || has_function_call(if_expression.else_expression())
+                || if_expression
+                    .else_if_expressions()
+                    .into_iter()
+                    .flatten()
+                    .any(|branch| {
+                        has_function_call(branch.condition())
+                            || has_function_call(branch.expression())
+                    })
+        }
+        Expression::Var(var) => has_function_call_in_var(var),
+        _ => false,
+    }
+}
+
+fn has_function_call_in_var(var: &Var) -> bool {
+    let Var::Expression(var_expression) = var else {
+        return false;
+    };
+
+    if let Prefix::Expression(expression) = var_expression.prefix() {
+        if has_function_call(expression) {
+            return true;
+        }
+    }
+
+    var_expression
+        .suffixes()
+        .any(|suffix| matches!(suffix, Suffix::Call(_)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +291,50 @@ mod tests {
     fn tolerates_expressions_it_cannot_parse() {
         // Never the source of a spurious error; other passes report bad syntax.
         assert!(check("!!!").is_ok());
+    }
+
+    #[test]
+    fn finds_a_bare_call() {
+        assert!(contains_function_call("count()"));
+    }
+
+    #[test]
+    fn finds_a_dotted_or_method_call() {
+        assert!(contains_function_call("props.value()"));
+        assert!(contains_function_call("a:b()"));
+        assert!(contains_function_call("a.b().c"));
+    }
+
+    #[test]
+    fn finds_a_call_as_one_operand() {
+        assert!(contains_function_call("count() + 1"));
+        assert!(contains_function_call("cond and count() or 0"));
+        assert!(contains_function_call("#items()"));
+        assert!(contains_function_call("if count() then a else b"));
+        assert!(contains_function_call("if cond then a else count()"));
+        assert!(contains_function_call(
+            "if a then 1 elseif count() then 2 else 3"
+        ));
+    }
+
+    #[test]
+    fn does_not_descend_into_an_anonymous_function() {
+        // The whole expression is already a function, so there is nothing to
+        // defer — wrapping it would only add a layer, not a thunk.
+        assert!(!contains_function_call("function() return count() end"));
+        // A call *is* found here, but from `items:map(...)` at the top level,
+        // never by looking inside the function literal passed to it.
+        assert!(contains_function_call(
+            "items:map(function(i) return f(i) end)"
+        ));
+    }
+
+    #[test]
+    fn allows_expressions_with_no_call() {
+        assert!(!contains_function_call("count"));
+        assert!(!contains_function_call("a.b.c"));
+        assert!(!contains_function_call("cond and a or b"));
+        assert!(!contains_function_call("\"a string\""));
+        assert!(!contains_function_call("{ 1, 2, 3 }"));
     }
 }

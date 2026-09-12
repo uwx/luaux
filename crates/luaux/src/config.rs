@@ -79,6 +79,7 @@ struct RawFactory {
     fragment: Option<String>,
     interpolate: Option<String>,
     merge: Option<String>,
+    wrap_calls: Option<bool>,
 }
 
 impl RawFactory {
@@ -96,6 +97,7 @@ impl RawFactory {
             || self.fragment.is_some()
             || self.interpolate.is_some()
             || self.merge.is_some()
+            || self.wrap_calls.is_some()
     }
 }
 
@@ -323,6 +325,23 @@ pub struct Config {
     /// That is defensible and not obviously right, so there is somewhere to say
     /// otherwise (factory-plan.md §3.5).
     pub merge: Option<String>,
+    /// `[factory] wrap_calls` — wrap a property whose expression contains a
+    /// function call in `function() ... end`.
+    ///
+    /// Off by default. A table-shaped library treats a function in a source
+    /// position as live and a plain value as dead the moment it is captured,
+    /// so `prop={count()}` calling `count()` once and handing over the result
+    /// is exactly the footgun this exists to remove — set it and the same
+    /// property emits `prop = function() return count() end` instead.
+    ///
+    /// Never applied to a spread, and never to a property already written as
+    /// a function, so an author's own wrapping is always left alone. Never
+    /// applied to a recognized event on an intrinsic either, since Roblox
+    /// calls an event's value itself and a thunk around it would swallow the
+    /// call instead of forwarding it — but a component's props are arbitrary,
+    /// so a call-shaped value passed to a component prop that happens to want
+    /// a plain callback is wrapped the same as any other (README).
+    pub wrap_calls: bool,
 }
 
 /// Which constructor arrangement a backend emits (backend-plan.md §2).
@@ -521,6 +540,7 @@ impl Default for Config {
             fragment: Some("React.Fragment".to_string()),
             interpolate: arrangement_defaults(BackendKind::Element).0,
             merge: None,
+            wrap_calls: false,
         }
     }
 }
@@ -694,6 +714,10 @@ impl Config {
             config.merge = Some(merge.to_string());
         }
 
+        if let Some(wrap_calls) = raw.factory.wrap_calls {
+            config.wrap_calls = wrap_calls;
+        }
+
         if let Some(fragment) = raw.factory.fragment {
             let fragment = factory_value("fragment", &fragment)?;
             // Emitted as the constructor's first argument, so that is the shape
@@ -793,6 +817,18 @@ impl Config {
             // to put it in — children are a positional argument there. A
             // sentinel that moved them would change the call's arrangement,
             // which is a backend's job, not a key's (backend-plan.md §5.5).
+            // A thunk defers evaluation for a library that re-reads a source
+            // over time. React reads a prop once per render, so there is
+            // nothing here for a thunk to defer — it would just be called
+            // once, one level further down, for the same result.
+            if config.wrap_calls {
+                return Err(ConfigError {
+                    message: "luaux.toml: [factory] wrap_calls has nothing to defer under \
+                              backend = \"element\"; React reads each prop once per render"
+                        .to_string(),
+                });
+            }
+
             if config.children.is_some() {
                 return Err(ConfigError {
                     message: "luaux.toml: [factory] children is a table key, and the element \
@@ -1740,6 +1776,28 @@ mod tests {
                     .as_deref(),
                 Some("scope:Computed")
             );
+        }
+
+        #[test]
+        fn wrap_calls_round_trips_under_table_and_curried() {
+            assert!(parse("[factory]\nbackend = \"table\"\nwrap_calls = true\n").wrap_calls);
+            assert!(parse("[factory]\nbackend = \"curried\"\nwrap_calls = true\n").wrap_calls);
+        }
+
+        #[test]
+        fn wrap_calls_defaults_to_off() {
+            assert!(!parse("[factory]\nbackend = \"table\"\n").wrap_calls);
+        }
+
+        /// React reads each prop once per render, so a thunk here would just be
+        /// called once, one level further down, for the same result.
+        #[test]
+        fn wrap_calls_is_rejected_under_the_element_backend() {
+            let error = parse_err(
+                "[factory]\nbackend = \"element\"\ncreate = \"React.createElement\"\n\
+                 fragment = \"React.Fragment\"\nwrap_calls = true\n",
+            );
+            assert!(error.contains("wrap_calls"), "{error}");
         }
 
         /// Inert without `compute`, and *reported* rather than silently kept.

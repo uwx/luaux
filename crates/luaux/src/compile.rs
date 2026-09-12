@@ -1630,6 +1630,78 @@ mod tests {
         }
     }
 
+    /// `[factory] wrap_calls` — deferring a call-containing property behind
+    /// `function() ... end` (README, `[factory] wrap_calls`).
+    mod wrap_calls {
+        use super::*;
+
+        fn wrapping_config() -> Config {
+            Config::parse(
+                "[factory]\nbackend = \"table\"\ncreate = \"create\"\nwrap_calls = true\n",
+            )
+            .expect("config")
+        }
+
+        fn build(source: &str) -> String {
+            let output =
+                compile_configured(&format!("{BINDING}{source}"), &Table, wrapping_config())
+                    .map(|(output, _)| output)
+                    .expect("compile");
+
+            strip_preamble(&output)
+        }
+
+        #[test]
+        fn a_call_containing_property_is_wrapped() {
+            assert_eq!(
+                build("local e = <Frame Size={count()}/>"),
+                "local e = create(\"Frame\")({ Size = function() return count() end })"
+            );
+        }
+
+        #[test]
+        fn a_property_with_no_call_is_left_alone() {
+            assert_eq!(
+                build("local e = <Frame Size={value}/>"),
+                "local e = create(\"Frame\")({ Size = value })"
+            );
+        }
+
+        /// A single-expression text child is a property (`Text = ...`) as much
+        /// as any written attribute, so it gets the same treatment.
+        #[test]
+        fn a_call_containing_text_child_is_wrapped() {
+            assert_eq!(
+                build("local e = <TextLabel>{count()}</TextLabel>"),
+                "local e = create(\"TextLabel\")({ Text = function() return count() end })"
+            );
+        }
+
+        /// An event's value is a callback Roblox calls itself, with the
+        /// event's own arguments. Wrapping it would swallow the call: the
+        /// event would invoke the thunk with no arguments, which would call
+        /// `getHandler()` again and throw its result away instead of firing
+        /// the original handler.
+        #[test]
+        fn an_event_on_an_intrinsic_is_left_alone() {
+            assert_eq!(
+                build("local e = <TextButton Activated={getHandler()}/>"),
+                "local e = create(\"TextButton\")({ Activated = getHandler() })"
+            );
+        }
+
+        /// An attribute already written as a function is not this feature's
+        /// business — wrapping it again would add a needless layer rather
+        /// than the thunk the config exists to add.
+        #[test]
+        fn an_attribute_already_a_function_is_not_double_wrapped() {
+            assert_eq!(
+                build("local e = <Frame Size={function() return count() end}/>"),
+                "local e = create(\"Frame\")({ Size = function() return count() end })"
+            );
+        }
+    }
+
     /// The element backend (backend-plan.md §3) — `F(class, props, children)`.
     ///
     /// React is the shape these are written against, and the differences from
