@@ -649,6 +649,115 @@ mod tests {
         );
     }
 
+    /// A class with no `Text` property, and a component (which has no
+    /// property luaux knows about at all), used to refuse bare or
+    /// interpolated text outright. Vide's numeric slots cannot hold a bare
+    /// string, but that is a reason to leave a lone literal as a plain
+    /// string entry rather than a reactive one — never a reason to refuse
+    /// the whole thing, which only ever mattered for Roblox's own instances.
+    /// A non-Roblox library, or a component that is really a thin wrapper
+    /// around one, can treat a string exactly like any other child.
+    mod implicit_text_children {
+        use super::*;
+
+        #[test]
+        fn literal_text_on_a_class_with_no_text_property_is_a_plain_child() {
+            assert_eq!(
+                build("local e = <Frame>hello</Frame>"),
+                "local e = create(\"Frame\")({ \"hello\" })"
+            );
+        }
+
+        #[test]
+        fn literal_text_on_a_component_is_a_plain_child() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card>hello</Card>"),
+                "local Card = f()\nlocal e = Card({ \"hello\" })"
+            );
+        }
+
+        /// The headline case: adjacent text turns `count` from an ordinary
+        /// child into interpolated text, and interpolated text needs the
+        /// same thunk here that `Text` would use — `count` may be a Vide
+        /// source, and a plain string would stringify it instead of reading
+        /// it.
+        #[test]
+        fn interpolated_text_on_a_component_is_reactive() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card>Count: {count}</Card>"),
+                "local Card = f()\nlocal e = Card({ function() return `Count: {__luaux_read(count)}` end })"
+            );
+        }
+
+        #[test]
+        fn interpolated_text_on_a_class_with_no_text_property_is_reactive() {
+            assert_eq!(
+                build("local e = <Frame>Count: {count}</Frame>"),
+                "local e = create(\"Frame\")({ function() return `Count: {__luaux_read(count)}` end })"
+            );
+        }
+
+        /// A run with no literal text in it is not interpolation — it is as
+        /// many ordinary children as were written, same as always. Collapsing
+        /// `{a}{b}` into one string would silently turn two children into
+        /// one.
+        #[test]
+        fn adjacent_expressions_with_no_text_stay_separate_children() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card>{a}{b}</Card>"),
+                "local Card = f()\nlocal e = Card({ a, b })"
+            );
+        }
+
+        /// Node children split the text either side of them into their own
+        /// runs, each reactive on its own, rather than losing their relative
+        /// order or merging across a child that is not text at all.
+        #[test]
+        fn text_either_side_of_a_node_child_stays_in_order() {
+            assert_eq!(
+                build(
+                    "local Card, Icon = f(), f()\nlocal e = <Card>before {a}<Icon/>after {b}</Card>"
+                ),
+                "local Card, Icon = f(), f()\nlocal e = Card({ function() return `before {__luaux_read(a)}` end, Icon({}), function() return `after {__luaux_read(b)}` end })"
+            );
+        }
+
+        /// `wrap_calls_in_children` still governs a bare expression run left
+        /// exactly as it was; the new interpolated-child path is `compute`/
+        /// `interpolate`'s to wrap, since it is already reactive there.
+        #[test]
+        fn a_bare_expression_run_still_answers_to_wrap_calls_in_children() {
+            let config = Config::parse(
+                "[factory]\nbackend = \"table\"\ncreate = \"create\"\n\
+                 wrap_calls_in_children = true\n",
+            )
+            .expect("config");
+            let output = compile_configured(
+                &format!("{BINDING}local Card = f()\nlocal e = <Card>{{count()}}</Card>"),
+                &Table,
+                config,
+            )
+            .map(|(output, _)| output)
+            .expect("compile");
+
+            assert_eq!(
+                strip_preamble(&output),
+                "local Card = f()\nlocal e = Card({ function() return count() end })"
+            );
+        }
+
+        /// A class that *does* carry a `Text` property is unaffected — the
+        /// ambiguity between text and another child is still genuine there,
+        /// because there a value really could go either way.
+        #[test]
+        fn a_text_capable_class_is_unaffected() {
+            assert!(
+                build_err("local e = <TextButton>{label}<UICorner/></TextButton>")
+                    .contains("unclear")
+            );
+        }
+    }
+
     #[test]
     fn a_fragment_rejects_text_rather_than_dropping_it() {
         // A fragment has no element to carry a `Text` property, so text in one
@@ -896,9 +1005,17 @@ mod tests {
         );
     }
 
+    /// A class with no `Text` property has nowhere to fold this into, but
+    /// that is no longer a reason to refuse it outright — see the
+    /// `implicit_text_children` module below. It becomes a plain string
+    /// child instead, the same as a literal `Text` would if the class had
+    /// one.
     #[test]
-    fn rejects_text_on_a_class_without_a_text_property() {
-        assert!(build_err("local e = <Frame>hello</Frame>").contains("no Text property"));
+    fn text_on_a_class_without_a_text_property_becomes_a_plain_child() {
+        assert_eq!(
+            build("local e = <Frame>hello</Frame>"),
+            "local e = create(\"Frame\")({ \"hello\" })"
+        );
     }
 
     /// Every resolution error at once, and output alongside them.
@@ -1698,6 +1815,107 @@ mod tests {
             assert_eq!(
                 build("local e = <Frame Size={function() return count() end}/>"),
                 "local e = create(\"Frame\")({ Size = function() return count() end })"
+            );
+        }
+    }
+
+    /// `[factory] wrap_calls_in_children` — the same wrapping as `wrap_calls`,
+    /// applied to a `{...}` expression left as an ordinary child rather than
+    /// folded into the `Text` property (README, `[factory]
+    /// wrap_calls_in_children`).
+    mod wrap_calls_in_children {
+        use super::*;
+
+        fn wrapping_config() -> Config {
+            Config::parse(
+                "[factory]\nbackend = \"table\"\ncreate = \"create\"\n\
+                 wrap_calls_in_children = true\n",
+            )
+            .expect("config")
+        }
+
+        fn build(source: &str) -> String {
+            let output =
+                compile_configured(&format!("{BINDING}{source}"), &Table, wrapping_config())
+                    .map(|(output, _)| output)
+                    .expect("compile");
+
+            strip_preamble(&output)
+        }
+
+        /// `<Frame>` carries no `Text` property, so the expression stays an
+        /// ordinary child — Vide's numeric child slot — rather than folding
+        /// into a property the way it would on a `<TextLabel>`.
+        #[test]
+        fn a_call_containing_child_is_wrapped() {
+            assert_eq!(
+                build("local e = <Frame>{count()}</Frame>"),
+                "local e = create(\"Frame\")({ function() return count() end })"
+            );
+        }
+
+        #[test]
+        fn a_child_with_no_call_is_left_alone() {
+            assert_eq!(
+                build("local e = <Frame>{value}</Frame>"),
+                "local e = create(\"Frame\")({ value })"
+            );
+        }
+
+        /// A component never folds children into a property — it has none
+        /// luaux knows about — so its expression children go through exactly
+        /// the same path as an intrinsic's.
+        #[test]
+        fn a_component_child_is_wrapped_too() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card>{count()}</Card>"),
+                "local Card = f()\nlocal e = Card({ function() return count() end })"
+            );
+        }
+
+        /// A child already written as a function is not this feature's
+        /// business, the same as `wrap_calls` on a property.
+        #[test]
+        fn a_child_already_a_function_is_not_double_wrapped() {
+            assert_eq!(
+                build("local e = <Frame>{function() return count() end}</Frame>"),
+                "local e = create(\"Frame\")({ function() return count() end })"
+            );
+        }
+
+        /// This key never reaches a property — `wrap_calls` does, and it is
+        /// off in this config.
+        #[test]
+        fn a_call_containing_property_is_left_alone() {
+            assert_eq!(
+                build("local e = <Frame Size={count()}/>"),
+                "local e = create(\"Frame\")({ Size = count() })"
+            );
+        }
+
+        /// The one that reads as inconsistent until the rule behind it is
+        /// spelled out (README): a *single* expression child on a
+        /// text-carrying class folds into the `Text` property before either
+        /// of these keys sees it, so it is `wrap_calls`'s to wrap — this key
+        /// leaves it alone even though, written this way, it looks like an
+        /// ordinary child.
+        #[test]
+        fn a_single_expression_text_child_is_left_to_wrap_calls() {
+            assert_eq!(
+                build("local e = <TextLabel>{\"count: \" .. count()}</TextLabel>"),
+                "local e = create(\"TextLabel\")({ Text = \"count: \" .. count() })"
+            );
+        }
+
+        /// Adjacent text splits the child into a literal and an expression,
+        /// which interpolates through `compute`/`interpolate` instead — already
+        /// reactive by default, and untouched by both `wrap_calls` and this
+        /// key.
+        #[test]
+        fn interpolated_text_is_unaffected() {
+            assert_eq!(
+                build("local e = <TextLabel>count: {count()}</TextLabel>"),
+                "local e = create(\"TextLabel\")({ Text = function() return `count: {__luaux_read(count())}` end })"
             );
         }
     }

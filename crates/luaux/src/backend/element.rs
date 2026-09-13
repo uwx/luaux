@@ -86,7 +86,7 @@ fn emit_fragment(
     context.used_fragment();
     writer.push(&format!("{}({name}, nil, ", context.create()));
 
-    let entries = child_entries(&fragment.children, false);
+    let entries = child_entries(&fragment.children, false, context);
     emit_table(
         &entries,
         Some(fragment.span.end.saturating_sub(1)),
@@ -140,7 +140,7 @@ fn emit_element(
     // spanned to the closing tag would eat the lines those children need.
     props.emit(element, None, context, writer, emit_node)?;
 
-    let children = child_entries(&element.children, plan.consumed_expressions);
+    let children = child_entries(&element.children, plan.text_folded, context);
 
     // Omitted entirely when there are none, so a leaf stays
     // `F("Frame", {})` rather than carrying an empty table nothing reads.

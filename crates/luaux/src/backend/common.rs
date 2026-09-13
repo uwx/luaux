@@ -15,6 +15,7 @@ use super::{EmitContext, EmitError};
 use crate::config::Interpolate;
 use crate::markup::*;
 use crate::roblox;
+use std::borrow::Cow;
 
 /// Merge helper for spread attributes. Inlined into the output rather than
 /// required, so luaux has no runtime dependency (see `crate::imports`).
@@ -37,8 +38,14 @@ pub(super) enum Entry<'a> {
     Pair { offset: usize, text: String },
     /// A nested element or fragment.
     Node { offset: usize, node: &'a Node },
-    /// An expression child, emitted verbatim.
-    Expression { offset: usize, expression: &'a str },
+    /// An expression child, emitted verbatim — or wrapped in
+    /// `function() ... end` under `[factory] wrap_calls_in_children`, which is
+    /// the one thing here that can turn the borrowed source into an owned
+    /// string.
+    Expression {
+        offset: usize,
+        expression: Cow<'a, str>,
+    },
     /// A retained comment, already Luau. Carries no value, so it needs its own
     /// separator handling — a comment cannot sit between two commas.
     Comment { offset: usize, luau: &'a str },
@@ -446,31 +453,129 @@ pub(super) fn wrap_if_call(value: String, context: &EmitContext<'_>) -> String {
 
 pub(super) fn child_entries<'a>(
     children: &'a [Child],
-    expressions_are_text: bool,
+    text_folded: bool,
+    context: &EmitContext<'_>,
 ) -> Vec<Entry<'a>> {
     let mut entries = Vec::new();
+    let mut index = 0;
 
-    for child in children {
-        match child {
-            Child::Node(node) => entries.push(Entry::Node {
-                offset: node.span().start,
-                node,
-            }),
-            // Text is always folded into the `Text` property by plan_text.
-            Child::Text { .. } => {}
-            Child::Comment { luau, span } => entries.push(Entry::Comment {
-                offset: span.start,
-                luau,
-            }),
-            Child::Expression { .. } if expressions_are_text => {}
-            Child::Expression { expression, span } => entries.push(Entry::Expression {
-                offset: span.start,
-                expression,
-            }),
+    while index < children.len() {
+        match &children[index] {
+            Child::Node(node) => {
+                entries.push(Entry::Node {
+                    offset: node.span().start,
+                    node,
+                });
+                index += 1;
+            }
+            Child::Comment { luau, span } => {
+                entries.push(Entry::Comment {
+                    offset: span.start,
+                    luau,
+                });
+                index += 1;
+            }
+            // Already folded into the `Text` property by `plan_text`.
+            Child::Text { .. } | Child::Expression { .. } if text_folded => {
+                index += 1;
+            }
+            Child::Text { .. } | Child::Expression { .. } => {
+                let start = index;
+                while index < children.len()
+                    && matches!(
+                        children[index],
+                        Child::Text { .. } | Child::Expression { .. }
+                    )
+                {
+                    index += 1;
+                }
+                entries.extend(text_run_entries(&children[start..index], context));
+            }
         }
     }
 
     entries
+}
+
+/// A maximal run of `Text`/`Expression` children that `plan_text` left
+/// alone — a component, or an intrinsic with no `Text` property, has no
+/// property for either to fold into.
+///
+/// A run with no literal text in it is exactly what it always was: each
+/// expression stays its own ordinary child — Vide's numeric slots hold as
+/// many as are written, and a lone run of them is not text, so nothing here
+/// has reason to combine them.
+///
+/// A run that does carry literal text has nowhere else to go — Vide's slots
+/// take Instances, tables, and functions, never a bare string — so it is
+/// encoded exactly the way interpolated `Text` is, and left as a single
+/// reactive child instead of a property. This is the case `wrap_calls_in_children`
+/// exists for: a Roblox class rarely has a use for it (a `Frame` cannot
+/// render a string child regardless), but a user component — or a
+/// non-Roblox library's own class — can very much treat it as one more
+/// child, and this is what lets `<Card>Hello {name}</Card>` compile instead
+/// of demanding the text be passed as a prop (README).
+fn text_run_entries<'a>(run: &'a [Child], context: &EmitContext<'_>) -> Vec<Entry<'a>> {
+    let has_text = run.iter().any(|child| matches!(child, Child::Text { .. }));
+
+    if !has_text {
+        return run
+            .iter()
+            .map(|child| match child {
+                Child::Expression { expression, span } => Entry::Expression {
+                    offset: span.start,
+                    expression: wrap_child_if_call(expression, context),
+                },
+                Child::Text { .. } | Child::Node(_) | Child::Comment { .. } => {
+                    unreachable!("a text run holds only Text and Expression, and has_text is false")
+                }
+            })
+            .collect();
+    }
+
+    let offset = match &run[0] {
+        Child::Text { span, .. } | Child::Expression { span, .. } => span.start,
+        Child::Node(_) | Child::Comment { .. } => {
+            unreachable!("a text run starts with Text or Expression")
+        }
+    };
+
+    let parts: Vec<TextPart> = run
+        .iter()
+        .map(|child| match child {
+            Child::Text { text, .. } => TextPart::Literal(text.clone()),
+            Child::Expression { expression, .. } => TextPart::Expression(expression.clone()),
+            Child::Node(_) | Child::Comment { .. } => {
+                unreachable!("a text run holds only Text and Expression")
+            }
+        })
+        .collect();
+
+    let (text, references) = encode_reactive_text(&parts, context);
+    let text = if references {
+        text
+    } else {
+        wrap_child_if_call(&text, context).into_owned()
+    };
+
+    vec![Entry::Expression {
+        offset,
+        expression: Cow::Owned(text),
+    }]
+}
+
+/// The `wrap_calls_in_children` half of implicit reactive effects: the same
+/// rule as [`wrap_if_call`], applied to a `{...}` expression left as an
+/// ordinary child rather than folded into a property.
+///
+/// Borrows when there is nothing to wrap, so a project with the option off —
+/// the default — allocates nothing here it was not already going to.
+fn wrap_child_if_call<'a>(expression: &'a str, context: &EmitContext<'_>) -> Cow<'a, str> {
+    if context.wrap_calls_in_children() && crate::lint::contains_function_call(expression) {
+        Cow::Owned(format!("function() return {expression} end"))
+    } else {
+        Cow::Borrowed(expression)
+    }
 }
 
 /// How an element's children divide between the `Text` property and Vide's
@@ -479,9 +584,11 @@ pub(super) fn child_entries<'a>(
 pub(super) struct TextPlan {
     /// Encoded Luau value for the `Text` property, if any.
     pub(super) text: Option<String>,
-    /// Whether expression children were folded into `text` rather than left as
-    /// children.
-    pub(super) consumed_expressions: bool,
+    /// Whether every `Text`/`Expression` child was folded into `text` rather
+    /// than left for `child_entries` to turn into children of its own — true
+    /// exactly when `text` is `Some`, and its own field so a caller reads it
+    /// as intent rather than re-deriving it from an `Option`.
+    pub(super) text_folded: bool,
     /// Source offset of the first text part, so `Text = …` lands on its line.
     pub(super) offset: usize,
 }
@@ -512,34 +619,24 @@ pub(super) fn plan_text(
         return Ok(TextPlan::default());
     }
 
-    let Some(class) = intrinsic else {
-        // Components take children, not text. Nothing here knows their props.
-        if has_text_literal {
-            return Err(EmitError::new(
-                format!(
-                    "<{}> is a component, so it cannot take bare text",
-                    element.name.as_written()
-                ),
-                element.span.start,
-                element.name.as_written().len() + 1,
-            )
-            .with_help("pass the text as a prop instead"));
-        }
-        return Ok(TextPlan::default());
+    // Neither a component nor a class with no `Text` property has anywhere to
+    // fold this into — a component's props are arbitrary, and Roblox simply
+    // never gave the class one. `child_entries` picks this back up: a run of
+    // text and expression children with nowhere to fold into becomes one
+    // reactive child instead of a property (README, `[factory]
+    // wrap_calls_in_children`), which is what makes `<Card>Hello
+    // {name}</Card>` and `<Frame>Hello {name}</Frame>` compile at all rather
+    // than demanding the text be passed as a prop.
+    let text_capable = match intrinsic {
+        Some(class) => roblox::has_text_property(class),
+        None => false,
     };
 
-    if !roblox::has_text_property(class) {
-        if has_text_literal {
-            return Err(EmitError::new(
-                format!("<{class}> has no Text property"),
-                element.span.start,
-                class.len() + 1,
-            )
-            .with_help("wrap the text in a <TextLabel>"));
-        }
-        // Expressions are ordinary children on a class with no text.
+    if !text_capable {
         return Ok(TextPlan::default());
     }
+
+    let class = intrinsic.expect("text_capable is only true for an intrinsic");
 
     // `<TextButton>{label}<UICorner/></TextButton>` is genuinely ambiguous: the
     // expression could be the button's text or another child, and nothing here
@@ -578,29 +675,7 @@ pub(super) fn plan_text(
         }
     }
 
-    // `use` is resolved at config load, so it is always present when `compute`
-    // is. The fallback keeps a hand-built Config from panicking here.
-    let mode = match (context.interpolate(), context.compute()) {
-        (Interpolate::Plain, _) => TextMode::Plain,
-        (Interpolate::Wrap, Some(wrapper)) => TextMode::Compute {
-            wrapper,
-            reader: context.use_fn().unwrap_or(crate::config::DEFAULT_USE),
-        },
-        (Interpolate::Wrap, None) => TextMode::Thunk,
-    };
-
-    let (text, references) = encode_text(&parts, mode);
-
-    // Only a wrapped emission names anything. A plain literal, a bare single
-    // expression, and plain interpolation all name nothing, so none of them
-    // demands a binding or inlines a helper.
-    if references {
-        match mode {
-            TextMode::Compute { .. } => context.used_compute(),
-            TextMode::Thunk => context.used_read(),
-            TextMode::Plain => {}
-        }
-    }
+    let (text, references) = encode_reactive_text(&parts, context);
 
     // `Compute`/`Thunk` already produced their own wrapper above; only a
     // plain literal or a bare single expression — `references == false` in
@@ -614,7 +689,7 @@ pub(super) fn plan_text(
 
     Ok(TextPlan {
         text: Some(text),
-        consumed_expressions: has_expressions,
+        text_folded: true,
         offset,
     })
 }
@@ -689,6 +764,41 @@ fn encode_text(parts: &[TextPart], mode: TextMode<'_>) -> (String, bool) {
         ),
         TextMode::Plain => (encode_interpolated(parts, None), false),
     }
+}
+
+/// [`encode_text`], plus the bookkeeping that decides *which* wrapper it uses
+/// and registers whichever inlined helper the result ends up relying on.
+///
+/// The one home for that decision, shared by a `Text` property (`plan_text`)
+/// and a synthesized reactive child (`text_run_entries`) — the two places
+/// interpolated text can land are different destinations for the exact same
+/// three shapes.
+fn encode_reactive_text(parts: &[TextPart], context: &EmitContext<'_>) -> (String, bool) {
+    // `use` is resolved at config load, so it is always present when `compute`
+    // is. The fallback keeps a hand-built Config from panicking here.
+    let mode = match (context.interpolate(), context.compute()) {
+        (Interpolate::Plain, _) => TextMode::Plain,
+        (Interpolate::Wrap, Some(wrapper)) => TextMode::Compute {
+            wrapper,
+            reader: context.use_fn().unwrap_or(crate::config::DEFAULT_USE),
+        },
+        (Interpolate::Wrap, None) => TextMode::Thunk,
+    };
+
+    let (text, references) = encode_text(parts, mode);
+
+    // Only a wrapped emission names anything. A plain literal, a bare single
+    // expression, and plain interpolation all name nothing, so none of them
+    // demands a binding or inlines a helper.
+    if references {
+        match mode {
+            TextMode::Compute { .. } => context.used_compute(),
+            TextMode::Thunk => context.used_read(),
+            TextMode::Plain => {}
+        }
+    }
+
+    (text, references)
 }
 
 /// Double quotes, matching Luau convention and stylua's default. Attribute

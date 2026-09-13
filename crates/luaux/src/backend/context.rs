@@ -175,6 +175,12 @@ impl<'a> EmitContext<'a> {
         self.resolver.wrap_calls()
     }
 
+    /// The same wrapping, applied to a `{...}` expression child rather than a
+    /// property — `[factory] wrap_calls_in_children`.
+    pub fn wrap_calls_in_children(&self) -> bool {
+        self.resolver.wrap_calls_in_children()
+    }
+
     pub fn used_create(&self) {
         self.create.set(true);
     }

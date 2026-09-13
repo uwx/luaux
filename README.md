@@ -359,6 +359,21 @@ because React re-runs the whole component instead.
 > binding from a string, so this is yours to avoid; it is at least loud, since
 > the wrong text is on screen.
 
+Text on a class with no `Text` property, or on a component (whose props are
+arbitrary — luaux has no `Text` to check against there either), does not fold
+into a property, but it is not refused either: `<Frame>Hello {name}</Frame>`
+and `<Card>Hello {name}</Card>` both compile, as one plain or reactive child
+in the exact same shape interpolated `Text` would use — a quoted string for
+literal-only text, and the same thunk otherwise. This matters less for
+Roblox, where a `Frame` cannot actually render a bare string regardless of
+what luaux hands it, and more for a non-Roblox library or a component that
+wraps one, where a string is an ordinary child like any other. Node children
+split the surrounding text into separate runs rather than losing their
+relative order — `<Card>before {a}<Icon/>after {b}</Card>` keeps `before
+{a}`, `<Icon/>`, and `after {b}` as three children in that order — while a
+run of expressions with no literal text alongside them is never folded into
+one: `<Card>{a}{b}</Card>` stays two children, exactly as it always has.
+
 ## Configuration
 
 `luaux.toml` is optional. With no `[factory]` block LuauX targets React.
@@ -406,6 +421,7 @@ compute = "scope:Computed"    # wrapper for interpolated text
 use = "use"                   # the reader inside compute's callback
 merge = "mergeProps"          # replaces the inlined spread helper
 wrap_calls = true             # wrap a call-containing property in function() ... end
+wrap_calls_in_children = true # the same, for a call-containing {...} child
 ```
 
 `interpolate` follows the arrangement — `plain` under `element`, `wrap` under
@@ -429,6 +445,22 @@ plain callback is wrapped the same as any other; write it as a function
 directly if that is not what you want. Off by default, and rejected under
 `backend = "element"`, where a prop is read once per render and there is
 nothing for a thunk to defer.
+
+`wrap_calls_in_children` is the same fix for the same footgun in a `{...}`
+child rather than a property — Vide's numeric child slots are exactly as
+allergic to a plain value as a property is. It is a separate key because a
+child does not always mean what it looks like it means. A *single* expression
+child on a class with a `Text` property — `<TextLabel>{"count: " ..
+count()}</TextLabel>` — is folded into the `Text` property before either key
+ever sees it, so `wrap_calls` is the one that governs it, not this one. Add
+adjacent text — `<TextLabel>count: {count()}</TextLabel>` — and it interpolates
+through `compute`/`interpolate` instead, which is already reactive by
+default and answers to neither key. `wrap_calls_in_children` only ever
+reaches an expression left as an ordinary child: on a class with no `Text`
+property, on a component (which never folds children into a property luaux
+knows about), or alongside element children. Same exclusions as `wrap_calls`
+otherwise — an already written function is left alone — and the same default
+and the same rejection under `backend = "element"`.
 
 > [!IMPORTANT]
 > **Writing a `[factory]` block turns every default off**, and `backend` becomes
