@@ -143,6 +143,12 @@ impl Resolver {
         self.config.wrap_calls
     }
 
+    /// The same wrapping, applied to a `{...}` expression child rather than a
+    /// property — `[factory] wrap_calls_in_children`.
+    pub fn wrap_calls_in_children(&self) -> bool {
+        self.config.wrap_calls_in_children
+    }
+
     pub fn resolve(&self, name: &ElementName, offset: usize) -> Result<Resolution, EmitError> {
         let simple = match name {
             // Dotted names are always components; a Roblox class name never has

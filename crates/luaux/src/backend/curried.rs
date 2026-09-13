@@ -47,7 +47,7 @@ fn emit_node(
             // A fragment is a plain table; the recursing libraries this
             // arrangement targets walk tables positionally, so a fragment
             // needs no runtime representation of its own.
-            let entries = child_entries(&fragment.children, false);
+            let entries = child_entries(&fragment.children, false, context);
             emit_table(
                 &entries,
                 Some(fragment.span.end.saturating_sub(1)),
@@ -99,7 +99,7 @@ fn emit_element(
     }
 
     let mut props = Props::build(element, &plan, intrinsic.as_deref(), resolved, context);
-    let children = child_entries(&element.children, plan.consumed_expressions);
+    let children = child_entries(&element.children, plan.text_folded, context);
 
     match context.children() {
         // Children are the array part of the props table.

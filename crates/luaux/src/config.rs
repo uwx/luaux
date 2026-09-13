@@ -80,6 +80,7 @@ struct RawFactory {
     interpolate: Option<String>,
     merge: Option<String>,
     wrap_calls: Option<bool>,
+    wrap_calls_in_children: Option<bool>,
 }
 
 impl RawFactory {
@@ -98,6 +99,7 @@ impl RawFactory {
             || self.interpolate.is_some()
             || self.merge.is_some()
             || self.wrap_calls.is_some()
+            || self.wrap_calls_in_children.is_some()
     }
 }
 
@@ -342,6 +344,23 @@ pub struct Config {
     /// so a call-shaped value passed to a component prop that happens to want
     /// a plain callback is wrapped the same as any other (README).
     pub wrap_calls: bool,
+    /// `[factory] wrap_calls_in_children` — the same wrapping as `wrap_calls`,
+    /// applied to a `{...}` expression *child* rather than a property.
+    ///
+    /// A child stays live the same way a property does: Vide's numeric child
+    /// slots track a function and never revisit a plain value. This is its
+    /// own key rather than folded into `wrap_calls`, because a child that
+    /// already carries adjacent text is not this — `<TextLabel>count:
+    /// {count()}</TextLabel>` interpolates through `compute`/`interpolate`
+    /// and is already reactive there, while `<TextLabel>{"count: " ..
+    /// count()}</TextLabel>` is a single expression child, which folds into
+    /// the `Text` *property* and is `wrap_calls`'s to wrap instead — this key
+    /// only ever reaches an expression left as an ordinary child (README).
+    ///
+    /// Off by default, and rejected under `backend = "element"` for the same
+    /// reason as `wrap_calls`: React reads its children once per render, and
+    /// there is nothing here for a thunk to defer.
+    pub wrap_calls_in_children: bool,
 }
 
 /// Which constructor arrangement a backend emits (backend-plan.md §2).
@@ -547,6 +566,7 @@ impl Default for Config {
             interpolate: arrangement_defaults(BackendKind::Element).0,
             merge: None,
             wrap_calls: false,
+            wrap_calls_in_children: false,
         }
     }
 }
@@ -724,6 +744,10 @@ impl Config {
             config.wrap_calls = wrap_calls;
         }
 
+        if let Some(wrap_calls_in_children) = raw.factory.wrap_calls_in_children {
+            config.wrap_calls_in_children = wrap_calls_in_children;
+        }
+
         if let Some(fragment) = raw.factory.fragment {
             let fragment = factory_value("fragment", &fragment)?;
             // Emitted as the constructor's first argument, so that is the shape
@@ -823,10 +847,18 @@ impl Config {
             // to put it in — children are a positional argument there. A
             // sentinel that moved them would change the call's arrangement,
             // which is a backend's job, not a key's (backend-plan.md §5.5).
+            if config.children.is_some() {
+                return Err(ConfigError {
+                    message: "luaux.toml: [factory] children is a table key, and the element \
+                              backend passes children as an argument instead"
+                        .to_string(),
+                });
+            }
+
             // A thunk defers evaluation for a library that re-reads a source
-            // over time. React reads a prop once per render, so there is
-            // nothing here for a thunk to defer — it would just be called
-            // once, one level further down, for the same result.
+            // over time. React reads a prop (and a child) once per render, so
+            // there is nothing here for a thunk to defer — it would just be
+            // called once, one level further down, for the same result.
             if config.wrap_calls {
                 return Err(ConfigError {
                     message: "luaux.toml: [factory] wrap_calls has nothing to defer under \
@@ -835,10 +867,11 @@ impl Config {
                 });
             }
 
-            if config.children.is_some() {
+            if config.wrap_calls_in_children {
                 return Err(ConfigError {
-                    message: "luaux.toml: [factory] children is a table key, and the element \
-                              backend passes children as an argument instead"
+                    message: "luaux.toml: [factory] wrap_calls_in_children has nothing to \
+                              defer under backend = \"element\"; React reads each child once \
+                              per render"
                         .to_string(),
                 });
             }
@@ -1809,6 +1842,48 @@ mod tests {
                  fragment = \"React.Fragment\"\nwrap_calls = true\n",
             );
             assert!(error.contains("wrap_calls"), "{error}");
+        }
+
+        #[test]
+        fn wrap_calls_in_children_round_trips_under_table_and_curried() {
+            assert!(
+                parse("[factory]\nbackend = \"table\"\nwrap_calls_in_children = true\n")
+                    .wrap_calls_in_children
+            );
+            assert!(
+                parse("[factory]\nbackend = \"curried\"\nwrap_calls_in_children = true\n")
+                    .wrap_calls_in_children
+            );
+        }
+
+        #[test]
+        fn wrap_calls_in_children_defaults_to_off() {
+            assert!(!parse("[factory]\nbackend = \"table\"\n").wrap_calls_in_children);
+        }
+
+        /// React reads each child once per render, exactly as it does a prop.
+        #[test]
+        fn wrap_calls_in_children_is_rejected_under_the_element_backend() {
+            let error = parse_err(
+                "[factory]\nbackend = \"element\"\ncreate = \"React.createElement\"\n\
+                 fragment = \"React.Fragment\"\nwrap_calls_in_children = true\n",
+            );
+            assert!(error.contains("wrap_calls_in_children"), "{error}");
+        }
+
+        /// The two keys are independent: `wrap_calls` reaches a property (and
+        /// a single expression folded into `Text`), `wrap_calls_in_children`
+        /// reaches an ordinary child, and setting one is not setting the
+        /// other.
+        #[test]
+        fn wrap_calls_and_wrap_calls_in_children_are_independent() {
+            let config = parse("[factory]\nbackend = \"table\"\nwrap_calls = true\n");
+            assert!(config.wrap_calls);
+            assert!(!config.wrap_calls_in_children);
+
+            let config = parse("[factory]\nbackend = \"table\"\nwrap_calls_in_children = true\n");
+            assert!(!config.wrap_calls);
+            assert!(config.wrap_calls_in_children);
         }
 
         /// Inert without `compute`, and *reported* rather than silently kept.
