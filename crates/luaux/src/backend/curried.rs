@@ -13,7 +13,7 @@
 //! Output is line-preserving on the same terms as every other backend
 //! (PLAN.md §5.5).
 
-use super::common::{child_entries, emit_table, plan_text, Entry, Props, TextPlan};
+use super::common::{callee, child_entries, emit_table, plan_text, Entry, Props, TextPlan};
 use super::writer::Writer;
 use super::{Backend, EmitContext, EmitError};
 use crate::markup::*;
@@ -86,16 +86,13 @@ fn emit_element(
         false => TextPlan::default(),
     };
 
+    let callee_text = callee(element, intrinsic.as_deref(), resolved)?;
     context.used_create();
     match &intrinsic {
         Some(class) => writer.push(&format!("{}(\"{class}\")(", context.create())),
         // Unlike `Table`, a component curries through the factory too — this
         // backend's whole reason to exist.
-        None => writer.push(&format!(
-            "{}({})(",
-            context.create(),
-            element.name.as_written()
-        )),
+        None => writer.push(&format!("{}({})(", context.create(), callee_text)),
     }
 
     let mut props = Props::build(element, &plan, intrinsic.as_deref(), resolved, context);

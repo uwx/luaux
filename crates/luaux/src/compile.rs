@@ -571,6 +571,31 @@ mod tests {
         );
     }
 
+    /// `<Component<<string>>>` — Luau's own doubled-bracket generic
+    /// instantiation, reachable from a tag.
+    #[test]
+    fn emits_a_generic_instantiation_on_a_component() {
+        assert_eq!(
+            build("local Card = f()\nlocal e = <Card<<string>>/>"),
+            "local Card = f()\nlocal e = Card<<string>>({})"
+        );
+    }
+
+    #[test]
+    fn emits_a_nested_generic_instantiation_on_a_component() {
+        assert_eq!(
+            build("local Card = f()\nlocal e = <Card<<Array<string>>>/>"),
+            "local Card = f()\nlocal e = Card<<Array<string>>>({})"
+        );
+    }
+
+    /// A Roblox class is never generic — rejected rather than silently
+    /// spliced into the string that names it.
+    #[test]
+    fn rejects_a_generic_instantiation_on_an_intrinsic() {
+        assert!(build_err("local e = <Frame<<string>>/>").contains("cannot take a generic"));
+    }
+
     #[test]
     fn emits_text_as_the_text_property() {
         assert_eq!(
@@ -1987,6 +2012,16 @@ mod tests {
             );
         }
 
+        /// The instantiation lands right on the callee, same as under every
+        /// other backend.
+        #[test]
+        fn a_component_can_be_generically_instantiated() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card<<string>>/>"),
+                "local Card = f()\nlocal e = React.createElement(Card<<string>>, {})"
+            );
+        }
+
         /// `React.Event.Activated` is a field access, which the call form
         /// `[E(\"Activated\")]` cannot express — the gap backend-plan.md §5.3
         /// closes with the trailing dot.
@@ -2227,6 +2262,14 @@ fragment = \"Frag\"
             assert_eq!(
                 build("local Card = f()\nlocal e = <Card Color={c}><TextLabel/></Card>"),
                 "local Card = f()\nlocal e = create(Card)({ Color = c, create(\"TextLabel\")({}) })"
+            );
+        }
+
+        #[test]
+        fn a_component_can_be_generically_instantiated() {
+            assert_eq!(
+                build("local Card = f()\nlocal e = <Card<<string>>/>"),
+                "local Card = f()\nlocal e = create(Card<<string>>)({})"
             );
         }
 

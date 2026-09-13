@@ -88,6 +88,27 @@ pub fn find_matching_brace(src: &str, open: usize) -> Result<usize, LexError> {
     Ok(lexer.pos - 1)
 }
 
+/// Given the byte offset of the first `<` of a `<<` generic instantiation
+/// opener, returns the offset of the `>` at which it closes.
+///
+/// Nested generics (`Component<<Array<string>>>`) fall out for free: every
+/// `<` and `>` in the span — the opener's own two characters included — moves
+/// one depth counter, so the count naturally reaches zero at the right `>`
+/// with no special-casing of adjacent closing brackets (see the `SYMBOLS`
+/// doc comment above on why `<<` needs an unambiguous opener in the first
+/// place).
+pub fn find_matching_generic_close(src: &str, open: usize) -> Result<usize, LexError> {
+    debug_assert_eq!(src.as_bytes().get(open), Some(&b'<'));
+    debug_assert_eq!(src.as_bytes().get(open + 1), Some(&b'<'));
+
+    let mut lexer = Lexer::new(src);
+    lexer.pos = open;
+    lexer.scan_balanced_generics(open)?;
+
+    // scan_balanced_generics lands just past the closing `>`.
+    Ok(lexer.pos - 1)
+}
+
 /// A resumable Luau lexer.
 ///
 /// Resumability is not a convenience — it is required. A `.luaux` file is not
@@ -413,6 +434,39 @@ impl<'a> Lexer<'a> {
         }
 
         self.err("unterminated interpolation", origin)
+    }
+
+    /// Cursor is at the first `<` of a `<<` generic instantiation opener.
+    /// Consumes through the matching `>`, tracking every `<`/`>` in the span
+    /// — the opener's own two characters included — as one depth counter.
+    fn scan_balanced_generics(&mut self, origin: usize) -> Result<(), LexError> {
+        let mut depth = 0usize;
+
+        while self.pos < self.bytes.len() {
+            match self.byte() {
+                b'<' => {
+                    depth += 1;
+                    self.pos += 1;
+                }
+                b'>' => {
+                    depth -= 1;
+                    self.pos += 1;
+                    if depth == 0 {
+                        return Ok(());
+                    }
+                }
+                c @ (b'\'' | b'"') => self.scan_quoted(c)?,
+                b'`' => self.scan_interp_string()?,
+                b'-' if self.peek(1) == Some(b'-') => self.scan_comment()?,
+                b'[' if self.long_bracket_level().is_some() => {
+                    let level = self.long_bracket_level().unwrap();
+                    self.scan_long_bracket(level)?;
+                }
+                _ => self.pos += 1,
+            }
+        }
+
+        self.err("unterminated generic instantiation", origin)
     }
 
     fn scan_number(&mut self) {

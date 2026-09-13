@@ -35,6 +35,11 @@ impl Node {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Element {
     pub name: ElementName,
+    /// The raw type-argument text of a `<Component<<T, ...>>>` instantiation,
+    /// if the tag carried one. Held as a raw source slice, never parsed — the
+    /// same treatment as everything inside `{...}` (see the module doc
+    /// comment).
+    pub generics: Option<String>,
     pub attributes: Vec<Attribute>,
     pub children: Vec<Child>,
     pub span: Span,

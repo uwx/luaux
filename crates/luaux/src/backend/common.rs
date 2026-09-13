@@ -426,6 +426,41 @@ pub(super) fn emit_table(
     Ok(())
 }
 
+/// The callee text for a component call — the written name, plus `<<...>>`
+/// when the tag carried an explicit generic instantiation
+/// (`<Component<<string>>>`).
+///
+/// The doubled brackets are not cosmetic: `Component<string>` is Luau *type*
+/// syntax, but this is expression position, where `<<...>>` is the only valid
+/// spelling of an instantiation (`identity<<number>>(1)`, lexer.rs:60-64) —
+/// the same doubling the LuauX tag itself uses. A single-bracket splice here
+/// would emit `Sx.For<MenuItem>(...)`, which the Luau parser rejects as a
+/// comparison with no right-hand side.
+///
+/// A Roblox class is never generic, so an intrinsic with an instantiation is
+/// rejected here rather than silently dropped or spliced into the string
+/// literal that names it (`context.create()("Frame<number>", ...)`).
+///
+/// `resolved` distinguishes a genuine Roblox class from an unresolved name
+/// merely carried as placeholder text (`Resolution::Unresolved`) — the latter
+/// already has its own error recorded by `context.resolve`, and per the
+/// "one error per mistake" convention this does not pile a second one on top.
+pub(super) fn callee(
+    element: &Element,
+    intrinsic: Option<&str>,
+    resolved: bool,
+) -> Result<String, EmitError> {
+    match (&element.generics, intrinsic, resolved) {
+        (Some(_), Some(class), true) => Err(EmitError::new(
+            format!("<{class}> is a Roblox class and cannot take a generic instantiation"),
+            element.span.start,
+            class.len() + 1,
+        )),
+        (Some(generics), _, _) => Ok(format!("{}<<{generics}>>", element.name.as_written())),
+        (None, _, _) => Ok(element.name.as_written()),
+    }
+}
+
 pub(super) fn attribute_value(value: &AttributeValue) -> String {
     match value {
         AttributeValue::Expression(expression) => expression.clone(),

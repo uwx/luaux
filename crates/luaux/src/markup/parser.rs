@@ -6,7 +6,7 @@
 //! captured verbatim by brace matching and never parsed.
 
 use super::ast::*;
-use crate::lexer::find_matching_brace;
+use crate::lexer::{find_matching_brace, find_matching_generic_close};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,12 +97,14 @@ impl<'a> Parser<'a> {
         }
 
         let name = self.parse_element_name()?;
+        let generics = self.parse_generic_instantiation()?;
         let attributes = self.parse_attributes()?;
 
         if self.at("/>") {
             self.pos += 2;
             return Ok(Node::Element(Element {
                 name,
+                generics,
                 attributes,
                 children: Vec::new(),
                 span: Span::new(start, self.pos),
@@ -133,10 +135,29 @@ impl<'a> Parser<'a> {
 
         Ok(Node::Element(Element {
             name,
+            generics,
             attributes,
             children,
             span: Span::new(start, self.pos),
         }))
+    }
+
+    /// Parses a `<<T, ...>>` generic instantiation right after an element
+    /// name, if one is there. Only the opening tag calls this — a closing
+    /// tag never repeats it.
+    fn parse_generic_instantiation(&mut self) -> Result<Option<String>, ParseError> {
+        if !self.at("<<") {
+            return Ok(None);
+        }
+
+        let open = self.pos;
+        let close = find_matching_generic_close(self.src, open).map_err(|error| ParseError {
+            message: error.message,
+            offset: error.offset,
+        })?;
+        self.pos = close + 1;
+
+        Ok(Some(self.src[open + 2..close - 1].trim().to_string()))
     }
 
     fn parse_element_name(&mut self) -> Result<ElementName, ParseError> {
@@ -720,6 +741,37 @@ mod tests {
             element.name,
             ElementName::Member(vec!["Foo".into(), "Bar".into(), "Baz".into()])
         );
+    }
+
+    #[test]
+    fn parses_no_generics_by_default() {
+        let element = element("<Frame/>");
+        assert_eq!(element.generics, None);
+    }
+
+    #[test]
+    fn parses_generic_instantiation() {
+        let element = element("<Component<<string>>>Hi</Component>");
+        assert_eq!(element.generics, Some("string".into()));
+        assert_eq!(element.name, ElementName::Simple("Component".into()));
+    }
+
+    #[test]
+    fn parses_self_closing_generic_instantiation() {
+        let element = element("<Component<<string>>/>");
+        assert_eq!(element.generics, Some("string".into()));
+    }
+
+    #[test]
+    fn parses_nested_generic_instantiation() {
+        let element = element("<Component<<Array<string>>>/>");
+        assert_eq!(element.generics, Some("Array<string>".into()));
+    }
+
+    #[test]
+    fn parses_multiple_generic_arguments() {
+        let element = element("<Component<<string, number>>/>");
+        assert_eq!(element.generics, Some("string, number".into()));
     }
 
     #[test]

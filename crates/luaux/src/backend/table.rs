@@ -15,7 +15,7 @@
 //! or child was written on, and the whole emission spans exactly the lines the
 //! LuauX did (PLAN.md §5.5).
 
-use super::common::{child_entries, emit_table, plan_text, Entry, Props, TextPlan};
+use super::common::{callee, child_entries, emit_table, plan_text, Entry, Props, TextPlan};
 use super::writer::Writer;
 use super::{Backend, EmitContext, EmitError};
 use crate::markup::*;
@@ -87,12 +87,13 @@ fn emit_element(
         false => TextPlan::default(),
     };
 
+    let callee_text = callee(element, intrinsic.as_deref(), resolved)?;
     match &intrinsic {
         Some(class) => {
             context.used_create();
             writer.push(&format!("{}(\"{class}\")(", context.create()));
         }
-        None => writer.push(&format!("{}(", element.name.as_written())),
+        None => writer.push(&format!("{}(", callee_text)),
     }
 
     let mut props = Props::build(element, &plan, intrinsic.as_deref(), resolved, context);

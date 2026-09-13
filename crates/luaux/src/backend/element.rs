@@ -29,7 +29,7 @@
 //! Output is line-preserving on the same terms as every other backend
 //! (PLAN.md §5.5).
 
-use super::common::{child_entries, emit_table, plan_text, Props, TextPlan};
+use super::common::{callee, child_entries, emit_table, plan_text, Props, TextPlan};
 use super::writer::Writer;
 use super::{Backend, EmitContext, EmitError};
 use crate::markup::{Element as Markup, Fragment, Node};
@@ -125,14 +125,11 @@ fn emit_element(
     // Both an intrinsic and a component are the factory's first argument, and
     // differ only in the quoting. That is simpler than the one-table
     // arrangement, where a component is called directly.
+    let callee_text = callee(element, intrinsic.as_deref(), resolved)?;
     context.used_create();
     match (&intrinsic, resolved) {
         (Some(class), true) => writer.push(&format!("{}(\"{class}\", ", context.create())),
-        _ => writer.push(&format!(
-            "{}({}, ",
-            context.create(),
-            element.name.as_written()
-        )),
+        _ => writer.push(&format!("{}({}, ", context.create(), callee_text)),
     }
 
     let props = Props::build(element, &plan, intrinsic.as_deref(), resolved, context);
